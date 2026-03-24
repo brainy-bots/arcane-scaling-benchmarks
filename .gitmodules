@@ -4,3 +4,6 @@
 [submodule "arcane-demos"]
 	path = arcane-demos
 	url = https://github.com/brainy-bots/arcane-demos.git
+[submodule "arcane_swarm"]
+	path = arcane_swarm
+	url = https://github.com/brainy-bots/arcane_swarm.git
