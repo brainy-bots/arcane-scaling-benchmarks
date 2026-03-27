@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+
+jobs:
+  powershell-quality:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PowerShell modules
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Script lint
+        shell: pwsh
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path ./scripts -Recurse -Severity Error
+          if ($issues) {
+            $issues | Format-Table -AutoSize
+            throw "ScriptAnalyzer found issues."
+          }
+
+      - name: Pester tests
+        shell: pwsh
+        run: |
+          Invoke-Pester -Path ./tests -CI
+

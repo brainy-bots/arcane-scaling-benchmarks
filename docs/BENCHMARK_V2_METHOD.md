@@ -11,7 +11,8 @@ It is intended as an intermediate step toward multi-host/AWS deployment and bott
 - Capture per-service utilization snapshots and logs for bottleneck attribution.
 
 ## Topology
-- `spacetimedb` container (`${SPACETIME_IMAGE:-clockworklabs/spacetime:latest}`; pin by digest for strict reproducibility)
+
+- `spacetimedb` container (`clockworklabs/spacetime:2.0.5`)
 - `redis` container (`redis:7-alpine`)
 - `arcane-manager` container (built from `arcane/`)
 - `arcane-cluster` containers (dynamically started by runner; supports 1..10 clusters)

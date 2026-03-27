@@ -1,436 +1,366 @@
 <#
 .SYNOPSIS
-  One-command AWS execution for Benchmark V2.
+  Launch an EC2 instance, run Benchmark v2 via SSM, upload results to S3, optionally terminate.
 
 .DESCRIPTION
-  Provisions a temporary EC2 instance, runs scripts/benchmark/Run-Benchmark-V2.ps1 remotely,
-  uploads run artifacts to S3, downloads them locally, and destroys cloud resources.
+  Requires: AWS CLI configured, an instance profile with AmazonSSMManagedInstanceCore + s3:PutObject on -ArtifactBucket.
 
-  This script assumes:
-  - AWS CLI is installed and configured locally.
-  - You have permissions for EC2, IAM, SSM, and S3.
-  - The benchmark repo is **public** (or otherwise cloneable without credentials).
-  - Published Arcane infra + swarm images are **pullable without login** (public registry), passed via
-    `-ArcaneInfraImage` / `-ArcaneSwarmImage` or `ARCANE_INFRA_IMAGE` / `ARCANE_SWARM_IMAGE`.
+  Reproducible mode only: uses published images via -UsePublishedImages.
+  -InfraImage / -SwarmImage must be **publicly** pullable (no registry auth on the instance).
 
-  Reproducible path: **public** benchmark repo + public images → no GitHub token.
-  If the benchmark repo is still **private**, set `GITHUB_TOKEN` or `-GitHubToken` so the instance can `git clone` only
-  (no submodules; images stay the published binaries).
+  This script lives under scripts\cloud. Run from that directory or any path; it does not depend on PSScriptRoot for AWS calls.
+
+.PARAMETER ArtifactBucket
+  S3 bucket to sync the remote output directory into (prefix includes run id).
+
+.PARAMETER IamInstanceProfileName
+  EC2 instance profile name (not ARN) with SSM + S3 permissions.
+
+.PARAMETER InfraImage
+  Full image ref for infra/manager/cluster (e.g. ghcr.io/brainy-bots/arcane-benchmark-infra:v1.0.0).
+
+.PARAMETER SwarmImage
+  Full image ref for swarm client (e.g. ghcr.io/brainy-bots/arcane-benchmark-swarm:v1.0.0).
 #>
 param(
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory = $true)]
   [string]$ArtifactBucket,
 
   [string]$Region = 'us-east-1',
-  [string]$InstanceType = 'm6i.2xlarge',
-  [string]$RepoUrl = 'https://github.com/martinjms/arcane-scaling-benchmarks.git',
-  [string]$RepoRef = 'master',
-  [string]$ArtifactPrefix = 'arcane-benchmarks/v2',
-  [string]$LocalOutDir = '',
+  [string]$InstanceType = 'c7i.2xlarge',
+  # Default Ubuntu root EBS is too small for Spacetime + Rust + Docker layers.
+  [int]$RootVolumeGiB = 100,
+  [string]$ArtifactPrefix = 'benchmark-v2-aws',
 
-  [int]$StartPlayers = 250,
-  [int]$StepPlayers = 250,
-  [int]$MaxPlayers = 6000,
-  [int]$DurationSeconds = 30,
-  [int[]]$ArcaneClusterCounts = @(1,2,3,4,5,10),
+  [Parameter(Mandatory = $true)]
+  [string]$IamInstanceProfileName,
 
-  # Published images (public GHCR). Env: ARCANE_INFRA_IMAGE / ARCANE_SWARM_IMAGE. Defaults: martinjms …:v1.0.0.
-  [string]$ArcaneInfraImage = '',
-  [string]$ArcaneSwarmImage = '',
+  [string]$RepoUrl = 'https://github.com/brainy-bots/arcane-scaling-benchmarks.git',
+  [string]$Branch = 'master',
 
-  # Only if RepoUrl is a private GitHub repo (clone). Use read-only PAT or `gh auth token` in GITHUB_TOKEN.
-  [string]$GitHubToken = '',
+  [string]$InfraImage = 'ghcr.io/brainy-bots/arcane-benchmark-infra:v1.0.0',
+  [string]$SwarmImage = 'ghcr.io/brainy-bots/arcane-benchmark-swarm:v1.0.0',
 
-  # Poll interval while waiting for the remote SSM command (blocks until Success / Failed / TimedOut).
-  [int]$SsmPollSeconds = 12,
+  [string]$SubnetId = '',
+  [string]$SecurityGroupId = '',
+  [string]$KeyName = '',
 
-  # SSM Run Command max runtime in seconds (full sweeps can exceed 2h).
-  [int]$SsmTimeoutSeconds = 21600,
+  [switch]$TerminateOnExit,
 
-  # Passed to Run-Benchmark-V2.ps1: print `docker stats` snapshots every N seconds (0 = off).
-  [int]$DockerStatsLogIntervalSec = 90,
-
-  [switch]$KeepInstance,
-  [switch]$KeepIamResources
+  # Extra arguments passed to Run-Benchmark-V2.ps1 on the instance (quoted string, e.g. '-MaxPlayers 2000 -StartPlayers 250')
+  [string]$BenchmarkPwshArgs = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
-if ([string]::IsNullOrWhiteSpace($ArcaneInfraImage)) { $ArcaneInfraImage = $env:ARCANE_INFRA_IMAGE }
-if ([string]::IsNullOrWhiteSpace($ArcaneSwarmImage)) { $ArcaneSwarmImage = $env:ARCANE_SWARM_IMAGE }
-# Default published images (override with params or env for forks / new tags).
-if ([string]::IsNullOrWhiteSpace($ArcaneInfraImage)) {
-  $ArcaneInfraImage = 'ghcr.io/martinjms/arcane-benchmark-infra:v1.0.0'
-}
-if ([string]::IsNullOrWhiteSpace($ArcaneSwarmImage)) {
-  $ArcaneSwarmImage = 'ghcr.io/martinjms/arcane-benchmark-swarm:v1.0.0'
-}
-if ($ArcaneInfraImage.Contains("'") -or $ArcaneSwarmImage.Contains("'")) {
-  throw 'Image references must not contain single quotes (SSM shell escaping). Use a tag without apostrophes.'
+function Assert-AwsCli {
+  $v = aws --version 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "AWS CLI not found or not working: $v" }
 }
 
-$ghTokForClone = $GitHubToken
-if ([string]::IsNullOrWhiteSpace($ghTokForClone)) { $ghTokForClone = $env:GITHUB_TOKEN }
-$preCloneAuth = @()
-if (-not [string]::IsNullOrWhiteSpace($ghTokForClone)) {
-  if ($ghTokForClone -match "['`r`n]") { throw 'GitHubToken / GITHUB_TOKEN must not contain single quotes or newlines.' }
-  $preCloneAuth += "export GITHUB_TOKEN='$ghTokForClone'"
-  $preCloneAuth += 'git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"'
+function Get-Ubuntu2204Ami([string]$reg) {
+  $name = '/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id'
+  $ami = aws ssm get-parameters --region $reg --names $name --query 'Parameters[0].Value' --output text
+  if ([string]::IsNullOrWhiteSpace($ami) -or $ami -eq 'None') { throw "Could not resolve Ubuntu 22.04 AMI in $reg" }
+  return $ami.Trim()
 }
 
-function Invoke-AwsJson([string]$AwsArgs) {
-  $raw = cmd /c "aws $AwsArgs --region $Region --output json"
-  if ($LASTEXITCODE -ne 0) { throw "aws command failed: aws $AwsArgs" }
-  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-  return ($raw | ConvertFrom-Json)
+function Get-DefaultSubnet([string]$reg) {
+  $vpcId = aws ec2 describe-vpcs --region $reg --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text
+  if ([string]::IsNullOrWhiteSpace($vpcId) -or $vpcId -eq 'None') { throw 'No default VPC; pass -SubnetId (and -SecurityGroupId).' }
+  $sn = aws ec2 describe-subnets --region $reg --filters Name=vpc-id,Values=$vpcId --query 'Subnets[0].SubnetId' --output text
+  if ([string]::IsNullOrWhiteSpace($sn) -or $sn -eq 'None') { throw 'No subnet in default VPC; pass -SubnetId.' }
+  return $sn.Trim()
 }
 
-function Invoke-AwsText([string]$AwsArgs) {
-  $raw = cmd /c "aws $AwsArgs --region $Region --output text"
-  if ($LASTEXITCODE -ne 0) { throw "aws command failed: aws $AwsArgs" }
-  return $raw.Trim()
-}
-
-function Wait-ForSsmOnline([string]$InstanceId) {
-  for($i=0; $i -lt 90; $i++) {
-    $ping = cmd /c "aws ssm describe-instance-information --region $Region --filters Key=InstanceIds,Values=$InstanceId --query `"InstanceInformationList[0].PingStatus`" --output text"
-    if ($LASTEXITCODE -eq 0 -and $ping.Trim() -eq 'Online') { return }
-    Start-Sleep -Seconds 5
+# Windows AWS CLI v2 expects file://C:\Path\file.json (NOT file:///C:/... which breaks).
+function Get-AwsCliFileUri([string]$path) {
+  $full = [System.IO.Path]::GetFullPath($path)
+  if ($full -match '^[A-Za-z]:\\') {
+    return 'file://' + $full
   }
-  throw "Instance $InstanceId did not become SSM Online in time."
+  return 'file:///' + ($full -replace '\\', '/')
 }
 
-function Wait-ForSsmCommand([string]$CommandId, [string]$InstanceId, [int]$PollSeconds) {
-  $lastOutLen = 0
-  $lastErrLen = 0
-  $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  while ($true) {
-    # Use cmd /c so AWS CLI stderr (warnings) does not surface as terminating NativeCommandError under $ErrorActionPreference = 'Stop'.
-    $raw = cmd /c "aws ssm get-command-invocation --region $Region --command-id $CommandId --instance-id $InstanceId --output json 2>nul"
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
-      Start-Sleep -Seconds $PollSeconds
-      continue
-    }
-    try {
-      $inv = $raw | ConvertFrom-Json
-    } catch {
-      Start-Sleep -Seconds $PollSeconds
-      continue
-    }
-    $status = $inv.Status
-    $out = [string]$inv.StandardOutputContent
-    $err = [string]$inv.StandardErrorContent
+function New-BenchmarkSecurityGroup([string]$reg, [string]$vpcId) {
+  $sg = aws ec2 create-security-group --region $reg --group-name "arcane-bench-$(Get-Random)" --description 'Arcane benchmark v2' --vpc-id $vpcId --query 'GroupId' --output text
+  if ($LASTEXITCODE -ne 0) { throw 'create-security-group failed' }
+  # New custom SGs default to allow all outbound (IPv4); no extra egress rule needed.
+  return $sg.Trim()
+}
 
-    if ($out.Length -gt $lastOutLen) {
-      Write-Host $out.Substring($lastOutLen) -NoNewline
-      $lastOutLen = $out.Length
-    }
-    if ($err.Length -gt $lastErrLen) {
-      Write-Host $err.Substring($lastErrLen) -NoNewline -ForegroundColor Yellow
-      $lastErrLen = $err.Length
-    }
-
-    if ($status -in @('Success','Cancelled','TimedOut','Failed','Cancelling')) {
-      # Final flush (same poll often includes last bytes)
-      if ($out.Length -gt $lastOutLen) {
-        Write-Host $out.Substring($lastOutLen) -NoNewline
-      }
-      if ($err.Length -gt $lastErrLen) {
-        Write-Host $err.Substring($lastErrLen) -NoNewline -ForegroundColor Yellow
-      }
-      return $status.Trim()
-    }
-
-    $m = [int][math]::Floor($sw.Elapsed.TotalMinutes)
-    $s = [int]($sw.Elapsed.TotalSeconds % 60)
-    Write-Host ""
-    Write-Host "[cloud] SSM Status=$status  elapsed ${m}m ${s}s  (invocation stdout ${lastOutLen} chars, stderr ${lastErrLen} chars)" -ForegroundColor DarkGray
-    Start-Sleep -Seconds $PollSeconds
+function Assert-PublicBenchmarkImages([string]$infra, [string]$swarm) {
+  $docker = Get-Command docker -ErrorAction SilentlyContinue
+  if (-not $docker) {
+    Write-Host 'docker not on PATH: skipping local anonymous pull check. Ensure images are public or EC2 pull will fail.' -ForegroundColor Yellow
+    return
   }
-}
-
-function Get-AwsFileUri([string]$Path) {
-  $full = (Resolve-Path -LiteralPath $Path).Path -replace '\\','/'
-  return "file://$full"
-}
-
-function Save-SsmInvocationSnapshot {
-  param(
-    [string]$CommandId,
-    [string]$InstanceId,
-    [string]$RegionName,
-    [string]$DestDir
-  )
-  $null = New-Item -ItemType Directory -Path $DestDir -Force
-  $snapJson = Join-Path $DestDir 'ssm_invocation.json'
-  cmd /c "aws ssm get-command-invocation --region $RegionName --command-id $CommandId --instance-id $InstanceId --output json" 2>nul |
-    Set-Content -LiteralPath $snapJson -Encoding utf8
-  $outTxt = Join-Path $DestDir 'ssm_StandardOutputContent.txt'
-  $errTxt = Join-Path $DestDir 'ssm_StandardErrorContent.txt'
-  @(
-    'SSM get-command-invocation StandardOutputContent (AWS API may truncate long output; see orchestrator_console.log in the downloaded run folder for the full remote log).'
-    '---'
-  ) | Set-Content -LiteralPath $outTxt -Encoding utf8
-  cmd /c "aws ssm get-command-invocation --region $RegionName --command-id $CommandId --instance-id $InstanceId --query StandardOutputContent --output text" 2>nul |
-    Add-Content -LiteralPath $outTxt -Encoding utf8
-  @(
-    'SSM get-command-invocation StandardErrorContent (may be truncated by API).'
-    '---'
-  ) | Set-Content -LiteralPath $errTxt -Encoding utf8
-  cmd /c "aws ssm get-command-invocation --region $RegionName --command-id $CommandId --instance-id $InstanceId --query StandardErrorContent --output text" 2>nul |
-    Add-Content -LiteralPath $errTxt -Encoding utf8
-}
-
-function Write-ArtifactManifest {
-  param([string]$RootDir, [string]$S3Uri)
-  $mf = Join-Path $RootDir 'MANIFEST.txt'
-  $lines = [System.Collections.Generic.List[string]]::new()
-  $lines.Add("generated_utc=$(([DateTime]::UtcNow).ToString('o'))")
-  $lines.Add("s3_prefix=$S3Uri")
-  Get-ChildItem -LiteralPath $RootDir -Recurse -File -ErrorAction SilentlyContinue |
-    Sort-Object FullName |
-    ForEach-Object { $lines.Add(('{0,12} {1}' -f $_.Length, $_.FullName)) }
-  $lines | Set-Content -LiteralPath $mf -Encoding utf8
-}
-
-if ([string]::IsNullOrWhiteSpace($LocalOutDir)) {
-  $LocalOutDir = Join-Path $PSScriptRoot ("aws_runs_" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
-}
-$null = New-Item -ItemType Directory -Path $LocalOutDir -Force
-
-Write-Host "Checking AWS CLI..." -ForegroundColor Cyan
-cmd /c "aws sts get-caller-identity --region $Region --output text" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "AWS CLI not configured or credentials invalid." }
-
-$runId = "arcane-v2-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
-$roleName = "$runId-role"
-$profileName = "$runId-profile"
-$sgName = "$runId-sg"
-
-$instanceId = $null
-$commandId = $null
-$securityGroupId = $null
-
-try {
-  Write-Host "Resolving default VPC/subnet..." -ForegroundColor Cyan
-  $vpcId = Invoke-AwsText "ec2 describe-vpcs --filters Name=isDefault,Values=true --query `"Vpcs[0].VpcId`""
-  if ([string]::IsNullOrWhiteSpace($vpcId) -or $vpcId -eq 'None') { throw "No default VPC found in region $Region." }
-  $subnetId = Invoke-AwsText "ec2 describe-subnets --filters Name=vpc-id,Values=$vpcId Name=default-for-az,Values=true --query `"Subnets[0].SubnetId`""
-  if ([string]::IsNullOrWhiteSpace($subnetId) -or $subnetId -eq 'None') {
-    $subnetId = Invoke-AwsText "ec2 describe-subnets --filters Name=vpc-id,Values=$vpcId --query `"Subnets[0].SubnetId`""
-  }
-
-  Write-Host "Creating security group..." -ForegroundColor Cyan
-  $securityGroupId = Invoke-AwsText "ec2 create-security-group --group-name $sgName --description `"Arcane benchmark v2 ephemeral SG`" --vpc-id $vpcId --query `"GroupId`""
-
-  Write-Host "Creating IAM role/profile..." -ForegroundColor Cyan
-  $trustJson = '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-  $trustPath = Join-Path $env:TEMP "$runId-trust.json"
-  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-  [System.IO.File]::WriteAllText($trustPath, $trustJson, $utf8NoBom)
-  $trustUri = Get-AwsFileUri -Path $trustPath
-  & aws iam create-role --role-name $roleName --assume-role-policy-document $trustUri --output text | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Failed to create IAM role $roleName." }
-  & aws iam attach-role-policy --role-name $roleName --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore --output text | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Failed to attach SSM policy to $roleName." }
-
-  $s3Policy = @{
-    Version = "2012-10-17"
-    Statement = @(
-      @{
-        Effect   = "Allow"
-        Action   = @("s3:PutObject","s3:AbortMultipartUpload","s3:ListBucket","s3:GetObject")
-        Resource = @("arn:aws:s3:::$ArtifactBucket","arn:aws:s3:::$ArtifactBucket/*")
-      }
-    )
-  } | ConvertTo-Json -Compress -Depth 5
-  $s3PolicyPath = Join-Path $env:TEMP "$runId-s3-inline.json"
-  [System.IO.File]::WriteAllText($s3PolicyPath, $s3Policy, $utf8NoBom)
-  $s3PolicyUri = Get-AwsFileUri -Path $s3PolicyPath
-  & aws iam put-role-policy --role-name $roleName --policy-name "$runId-s3" --policy-document $s3PolicyUri --output text | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Failed to attach inline S3 policy to $roleName." }
-
-  cmd /c "aws iam create-instance-profile --instance-profile-name $profileName --output text" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Failed to create instance profile $profileName." }
-  cmd /c "aws iam add-role-to-instance-profile --instance-profile-name $profileName --role-name $roleName --output text" | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Failed to add role $roleName to instance profile $profileName." }
-  Start-Sleep -Seconds 10
-
-  Write-Host "Resolving Ubuntu 22.04 AMI (Canonical)..." -ForegroundColor Cyan
-  $amiId = Invoke-AwsText "ec2 describe-images --owners 099720109477 --filters Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-* Name=state,Values=available --query `"sort_by(Images, &CreationDate)[-1].ImageId`""
-  if ([string]::IsNullOrWhiteSpace($amiId) -or $amiId -eq 'None') { throw "Failed to resolve Ubuntu 22.04 AMI via ec2 describe-images." }
-
-  Write-Host "Launching EC2 instance ($InstanceType)..." -ForegroundColor Cyan
-  $run = Invoke-AwsJson "ec2 run-instances --image-id $amiId --instance-type $InstanceType --iam-instance-profile Name=$profileName --subnet-id $subnetId --security-group-ids $securityGroupId --tag-specifications `"ResourceType=instance,Tags=[{Key=Name,Value=$runId}]`" --block-device-mappings `"DeviceName=/dev/sda1,Ebs={VolumeSize=100,VolumeType=gp3,DeleteOnTermination=true}`" --count 1"
-  $instanceId = $run.Instances[0].InstanceId
-  if ([string]::IsNullOrWhiteSpace($instanceId)) { throw "Failed to launch EC2 instance." }
-
-  Write-Host "Waiting for instance running..." -ForegroundColor Cyan
-  cmd /c "aws ec2 wait instance-running --region $Region --instance-ids $instanceId"
-  if ($LASTEXITCODE -ne 0) { throw "Instance $instanceId failed to reach running state." }
-
-  Write-Host "Waiting for SSM agent online..." -ForegroundColor Cyan
-  Wait-ForSsmOnline -InstanceId $instanceId
-
-  $remotePrefix = "$ArtifactPrefix/$runId"
-  $clusterCsv = ($ArcaneClusterCounts -join ',')
-
-  $remoteCommands = @(
-    # SSM AWS-RunShellScript uses /bin/sh (dash on Ubuntu), not bash — no pipefail.
-    "set -eu",
-    "export HOME=/root",
-    "echo '=== arcane-cloud: starting bootstrap (apt/base) ==='",
-    "export DEBIAN_FRONTEND=noninteractive",
-    "echo debconf debconf/frontend select Noninteractive | sudo debconf-set-selections",
-    "sudo apt-get update",
-    "sudo apt-get install -y ca-certificates curl git jq unzip software-properties-common",
-    "sudo apt-get install -y binaryen || true",
-    "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip",
-    "unzip -q -o /tmp/awscliv2.zip -d /tmp",
-    "sudo /tmp/aws/install --update",
-    "rm -rf /tmp/aws /tmp/awscliv2.zip",
-    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker.gpg",
-    "echo `"deb [arch=`$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu `$(. /etc/os-release && echo `$VERSION_CODENAME) stable`" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null",
-    "sudo apt-get update",
-    "sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
-    "echo '=== arcane-cloud: Docker installed; Spacetime + Rust + PowerShell ==='",
-    # Host `spacetime build` (Run-Benchmark-V2.ps1) needs Rust + wasm32 target on the instance.
-    "sudo apt-get install -y build-essential pkg-config libssl-dev",
-    "curl -sSf https://install.spacetimedb.com | sh -s -- -y",
-    "curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable",
-    # Do not source ~/.bashrc under SSM: document runs as /bin/sh (dash); bashrc uses bash-only builtins (shopt).
-    'export PATH="/root/.cargo/bin:/root/.local/bin:/root/.spacetime/bin:$PATH"',
-    "rustup target add wasm32-unknown-unknown",
-    "curl -L -o /tmp/powershell.deb https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell_7.4.6-1.deb_amd64.deb",
-    "sudo dpkg -i /tmp/powershell.deb || sudo apt-get -f install -y",
-    "rm -f /tmp/powershell.deb",
-    "echo '=== arcane-cloud: clone repo + benchmark (docker pulls + spacetime build may take many minutes) ==='"
-  ) + $preCloneAuth + @(
-    "mkdir -p /opt/bench && cd /opt/bench",
-    "git clone --depth 1 --branch $RepoRef $RepoUrl repo",
-    "cd repo",
-    "cd scripts/benchmark",
-    "export AWS_DEFAULT_REGION=$Region",
-    "export ARCANE_INFRA_IMAGE='$ArcaneInfraImage'",
-    "export ARCANE_SWARM_IMAGE='$ArcaneSwarmImage'",
-    'export PATH="/root/.cargo/bin:/root/.local/bin:/root/.spacetime/bin:$PATH"',
-    "echo '=== arcane-cloud: starting Run-Benchmark-V2.ps1 (full console -> /tmp/arcane_bench_console.log, then S3) ==='",
-    # Remote is /bin/sh: capture ALL pwsh stdout/stderr to a file (SSM API truncates invocation output); upload that file with artifacts.
-    "pwsh -NoLogo -NoProfile -File ./Run-Benchmark-V2.ps1 -UsePublishedImages -DockerStatsLogIntervalSec $DockerStatsLogIntervalSec -StartPlayers $StartPlayers -StepPlayers $StepPlayers -MaxPlayers $MaxPlayers -DurationSeconds $DurationSeconds -ArcaneClusterCounts $clusterCsv > /tmp/arcane_bench_console.log 2>&1; ec=`$?; if [ `$ec -ne 0 ]; then echo 'Run-Benchmark-V2.ps1 failed'; tail -n 200 /tmp/arcane_bench_console.log >&2; exit `$ec; fi",
-    'LATEST_DIR=$(ls -dt v2_runs_* | head -n 1)',
-    'if [ -z "$LATEST_DIR" ]; then echo ''No v2 run output found'' >&2; exit 1; fi',
-    "aws s3 cp `"./`$LATEST_DIR`" `"s3://$ArtifactBucket/$remotePrefix/`$LATEST_DIR`" --recursive --region $Region",
-    "if [ -f /tmp/arcane_bench_console.log ]; then aws s3 cp /tmp/arcane_bench_console.log s3://$ArtifactBucket/$remotePrefix/`$LATEST_DIR/orchestrator_console.log --region $Region; fi",
-    "echo `"s3://$ArtifactBucket/$remotePrefix/`$LATEST_DIR`" | tee /tmp/arcane_v2_s3_path.txt",
-    "aws s3 cp /tmp/arcane_v2_s3_path.txt `"s3://$ArtifactBucket/$remotePrefix/s3_path.txt`" --region $Region"
-  )
-
-  Write-Host "Starting remote benchmark command via SSM..." -ForegroundColor Cyan
-  $ssmParamsPath = Join-Path $env:TEMP "$runId-ssm-parameters.json"
-  $utf8NoBom2 = New-Object System.Text.UTF8Encoding $false
-  $ssmParamsOnly = @{ commands = $remoteCommands }
-  [System.IO.File]::WriteAllText($ssmParamsPath, ($ssmParamsOnly | ConvertTo-Json -Depth 12), $utf8NoBom2)
-  $ssmParamsUri = Get-AwsFileUri -Path $ssmParamsPath
-  $commandId = (cmd /c "aws ssm send-command --region $Region --instance-ids $instanceId --document-name AWS-RunShellScript --comment Arcane-benchmark-v2 --timeout-seconds $SsmTimeoutSeconds --parameters $ssmParamsUri --output json --query Command.CommandId --output text").Trim()
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commandId) -or $commandId -eq 'None') { throw "Failed to start SSM send-command (parameters file)." }
-
-  Write-Host "Waiting for remote SSM command (timeout ${SsmTimeoutSeconds}s). Progress lines poll every ${SsmPollSeconds}s." -ForegroundColor Yellow
-  Write-Host "Cold EC2: bootstrap (apt, Docker, Rust, Spacetime, pulls, wasm build) runs before the benchmark loop." -ForegroundColor DarkGray
-  Write-Host "Full remote console is written to /tmp/arcane_bench_console.log on the instance and uploaded to S3 as orchestrator_console.log with the run artifacts." -ForegroundColor DarkGray
-
-  $status = Wait-ForSsmCommand -CommandId $commandId -InstanceId $instanceId -PollSeconds $SsmPollSeconds
-  if ($status -ne 'Success') {
-    $stderr = cmd /c "aws ssm get-command-invocation --region $Region --command-id $commandId --instance-id $instanceId --query `"StandardErrorContent`" --output text"
-    throw "Remote benchmark command status: $status`n$stderr"
-  }
-
-  $ssmSnapDir = Join-Path $LocalOutDir 'ssm_snapshot'
-  Save-SsmInvocationSnapshot -CommandId $commandId -InstanceId $instanceId -RegionName $Region -DestDir $ssmSnapDir
-
-  Write-Host "Fetching artifact location..." -ForegroundColor Cyan
-  $s3Path = Invoke-AwsText "s3 cp s3://$ArtifactBucket/$remotePrefix/s3_path.txt -"
-  if ([string]::IsNullOrWhiteSpace($s3Path)) { throw "Could not fetch artifact S3 path marker." }
-  $s3Path = $s3Path.Trim()
-
-  Write-Host "Downloading artifacts to $LocalOutDir..." -ForegroundColor Cyan
-  cmd /c "aws s3 cp $s3Path `"$LocalOutDir`" --recursive --region $Region"
-  if ($LASTEXITCODE -ne 0) { throw "Failed to download artifacts from $s3Path." }
-
-  $csvPath = Get-ChildItem -LiteralPath $LocalOutDir -Recurse -Filter 'benchmark_v2_results.csv' -ErrorAction SilentlyContinue |
-    Select-Object -First 1 -ExpandProperty FullName
-  if (-not $csvPath -or -not (Test-Path -LiteralPath $csvPath)) {
-    throw @"
-Orchestrator failed: benchmark_v2_results.csv not found under $LocalOutDir after S3 download.
-The remote run must produce CSV under v2_runs_* and upload it. Inspect ssm_snapshot/ and S3: $s3Path
+  foreach ($img in @($infra, $swarm)) {
+    & docker pull $img
+    if ($LASTEXITCODE -ne 0) {
+      throw @"
+Anonymous docker pull failed for '$img'.
+This runner does not log in to GHCR. Make the package public (GitHub Packages settings) or mirror to a public registry and pass -InfraImage / -SwarmImage.
 "@
-  }
-
-  $fullLogSrc = Get-ChildItem -LiteralPath $LocalOutDir -Recurse -Filter 'orchestrator_console.log' -ErrorAction SilentlyContinue |
-    Select-Object -First 1 -ExpandProperty FullName
-  if ($fullLogSrc -and (Test-Path -LiteralPath $fullLogSrc)) {
-    Copy-Item -LiteralPath $fullLogSrc -Destination (Join-Path $LocalOutDir 'orchestrator_console.log') -Force
-  }
-
-  Write-ArtifactManifest -RootDir $LocalOutDir -S3Uri $s3Path
-
-  Write-Host "Cloud benchmark completed successfully." -ForegroundColor Green
-  Write-Host "Artifacts (local): $LocalOutDir" -ForegroundColor Green
-  Write-Host "Artifacts (S3):    $s3Path" -ForegroundColor Green
-  Write-Host "Manifest:          $(Join-Path $LocalOutDir 'MANIFEST.txt')" -ForegroundColor Green
-
-  $summaryPath = Get-ChildItem -LiteralPath $LocalOutDir -Recurse -Filter 'benchmark_v2_summary.txt' -ErrorAction SilentlyContinue |
-    Select-Object -First 1 -ExpandProperty FullName
-
-  $resultsTxt = Join-Path $LocalOutDir 'RESULTS.txt'
-  Write-Host ''
-  Write-Host '================================================================' -ForegroundColor Cyan
-  Write-Host '  BENCHMARK V2 — RESULTS' -ForegroundColor Cyan
-  Write-Host '================================================================' -ForegroundColor Cyan
-
-  if ($summaryPath -and (Test-Path -LiteralPath $summaryPath)) {
-    $summaryBody = Get-Content -LiteralPath $summaryPath -Raw
-    Write-Host $summaryBody
-    $summaryBody | Set-Content -Encoding utf8 $resultsTxt
-    Write-Host "RESULTS.txt (copy of summary): $resultsTxt" -ForegroundColor DarkGray
-  } else {
-    $rows = Import-Csv -LiteralPath $csvPath
-    $display = $rows | ForEach-Object {
-      [PSCustomObject]@{
-        backend           = $_.backend
-        num_servers       = $_.num_servers
-        ceiling_players   = if ([string]::IsNullOrWhiteSpace([string]$_.ceiling_players)) { '(none)' } else { $_.ceiling_players }
-      }
     }
-    $text = ($display | Format-Table -AutoSize | Out-String).TrimEnd()
-    Write-Host $text
-    @(
-      'Arcane Benchmark v2 — player ceilings'
-      ''
-      $text
-      ''
-      "CSV: $csvPath"
-    ) -join "`n" | Set-Content -Encoding utf8 $resultsTxt
-    Write-Host "RESULTS.txt (from CSV): $resultsTxt" -ForegroundColor DarkGray
+  }
+  Write-Host 'Local anonymous docker pull OK for infra and swarm images.' -ForegroundColor DarkGray
+}
+
+Assert-AwsCli
+
+if ($IamInstanceProfileName -eq 'YourInstanceProfileName') {
+  throw 'Replace -IamInstanceProfileName with a real EC2 instance profile name (not the README placeholder). Example: aws iam list-instance-profiles --query "InstanceProfiles[*].InstanceProfileName" --output text'
+}
+
+aws iam get-instance-profile --instance-profile-name $IamInstanceProfileName --output json 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  throw "IAM instance profile not found in this account: '$IamInstanceProfileName'. List: aws iam list-instance-profiles --query ""InstanceProfiles[*].InstanceProfileName"" --output text"
+}
+
+if (-not $SkipLocalPublicImageCheck) {
+  Assert-PublicBenchmarkImages -infra $InfraImage -swarm $SwarmImage
+}
+
+$runId = Get-Date -Format 'yyyyMMdd_HHmmss'
+$remoteRoot = '/opt/arcane-scaling-benchmarks'
+$remoteOutParent = '/opt/arcane-benchmark-out'
+$remoteOutDir = "$remoteOutParent/aws_runs_$runId"
+$s3Dest = "s3://$ArtifactBucket/$ArtifactPrefix/$runId/"
+
+$ami = Get-Ubuntu2204Ami $Region
+$rootDev = aws ec2 describe-images --region $Region --image-ids $ami --query 'Images[0].RootDeviceName' --output text
+if ([string]::IsNullOrWhiteSpace($rootDev) -or $rootDev -eq 'None') { $rootDev = '/dev/sda1' }
+$rootDev = $rootDev.Trim()
+$bdmPath = Join-Path $env:TEMP ("arcane-bdm-{0}.json" -f $runId)
+$bdmBody = @"
+[{"DeviceName":"$rootDev","Ebs":{"VolumeSize":$RootVolumeGiB,"VolumeType":"gp3","DeleteOnTermination":true}}]
+"@
+[System.IO.File]::WriteAllText($bdmPath, $bdmBody.Trim(), [System.Text.UTF8Encoding]::new($false))
+$bdmUri = Get-AwsCliFileUri $bdmPath
+Write-Host "Root EBS: $RootVolumeGiB GiB on $rootDev" -ForegroundColor DarkGray
+
+if ([string]::IsNullOrWhiteSpace($SubnetId)) {
+  $SubnetId = Get-DefaultSubnet $Region
+}
+$vpcForSg = aws ec2 describe-subnets --region $Region --subnet-ids $SubnetId --query 'Subnets[0].VpcId' --output text
+if ([string]::IsNullOrWhiteSpace($SecurityGroupId)) {
+  Write-Host "No -SecurityGroupId; creating temporary SG in VPC $vpcForSg" -ForegroundColor Yellow
+  $SecurityGroupId = New-BenchmarkSecurityGroup -reg $Region -vpcId $vpcForSg.Trim()
+}
+
+$userData = @'
+#!/bin/bash
+set -euo pipefail
+export HOME="${HOME:-/root}"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y ca-certificates curl git gnupg
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
+curl -sSf https://install.spacetimedb.com | sh -s -- -y
+export PATH="/root/.local/bin:$PATH"
+curl -LO https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell_7.4.6-1.deb_amd64.deb
+dpkg -i powershell_7.4.6-1.deb_amd64.deb || apt-get install -f -y
+rm -f powershell_7.4.6-1.deb_amd64.deb
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+apt-get install -y unzip
+unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install && rm -rf /tmp/aws /tmp/awscliv2.zip
+'@
+
+$udB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($userData))
+
+$runArgs = @(
+  'ec2', 'run-instances',
+  '--region', $Region,
+  '--image-id', $ami,
+  '--instance-type', $InstanceType,
+  '--subnet-id', $SubnetId,
+  '--security-group-ids', $SecurityGroupId,
+  '--iam-instance-profile', "Name=$IamInstanceProfileName",
+  '--block-device-mappings', $bdmUri,
+  '--user-data', $udB64,
+  '--tag-specifications', "ResourceType=instance,Tags=[{Key=Name,Value=arcane-benchmark-v2-$runId}]",
+  '--metadata-options', 'HttpTokens=required',
+  '--query', 'Instances[0].InstanceId',
+  '--output', 'text'
+)
+if (-not [string]::IsNullOrWhiteSpace($KeyName)) {
+  $runArgs += @('--key-name', $KeyName)
+}
+
+Write-Host "Launching instance (AMI $ami)..." -ForegroundColor Cyan
+$instanceId = & aws @runArgs
+$runInstExit = $LASTEXITCODE
+Remove-Item -LiteralPath $bdmPath -Force -ErrorAction SilentlyContinue
+if ($runInstExit -ne 0) { throw "run-instances failed (aws exit $runInstExit)" }
+if ([string]::IsNullOrWhiteSpace($instanceId)) { throw 'run-instances did not return InstanceId' }
+$instanceId = $instanceId.Trim()
+Write-Host "InstanceId=$instanceId" -ForegroundColor Green
+
+Write-Host 'Waiting for instance running...' -ForegroundColor Cyan
+aws ec2 wait instance-running --region $Region --instance-ids $instanceId | Out-Null
+
+Write-Host 'Waiting for SSM agent (can take several minutes after user-data)...' -ForegroundColor Cyan
+$deadline = (Get-Date).AddMinutes(20)
+do {
+  Start-Sleep -Seconds 15
+  $ping = aws ssm describe-instance-information --region $Region --filters "Key=InstanceIds,Values=$instanceId" --query 'InstanceInformationList[0].PingStatus' --output text 2>$null
+  if ($ping -eq 'Online') { break }
+  if ((Get-Date) -gt $deadline) { throw 'Timed out waiting for SSM Online. Check IAM instance profile (AmazonSSMManagedInstanceCore) and VPC endpoints / public egress.' }
+} while ($true)
+
+function Escape-BashDoubleQuoted([string]$s) {
+  if ($null -eq $s) { return '' }
+  return $s.Replace('\', '\\').Replace('"', '\"').Replace('$', '\$').Replace('`', '\`')
+}
+
+$benchArgsEffective = $BenchmarkPwshArgs
+if ($benchArgsEffective -notmatch '(^|\s)-UsePublishedImages(\s|$)') {
+  if ([string]::IsNullOrWhiteSpace($benchArgsEffective)) {
+    $benchArgsEffective = '-UsePublishedImages'
+  } else {
+    $benchArgsEffective = "-UsePublishedImages $benchArgsEffective"
   }
 }
-finally {
-  if ($instanceId -and -not $KeepInstance) {
-    Write-Host "Terminating EC2 instance $instanceId ..." -ForegroundColor DarkGray
-    try { cmd /c "aws ec2 terminate-instances --region $Region --instance-ids $instanceId --output text" | Out-Null } catch {}
-    try { cmd /c "aws ec2 wait instance-terminated --region $Region --instance-ids $instanceId" | Out-Null } catch {}
-  }
-
-  if ($securityGroupId) {
-    Write-Host "Deleting security group $securityGroupId ..." -ForegroundColor DarkGray
-    try { cmd /c "aws ec2 delete-security-group --region $Region --group-id $securityGroupId --output text" | Out-Null } catch {}
-  }
-
-  if (-not $KeepIamResources) {
-    Write-Host "Cleaning up IAM role/profile..." -ForegroundColor DarkGray
-    try { cmd /c "aws iam remove-role-from-instance-profile --instance-profile-name $profileName --role-name $roleName --output text" | Out-Null } catch {}
-    try { cmd /c "aws iam delete-instance-profile --instance-profile-name $profileName --output text" | Out-Null } catch {}
-    try { cmd /c "aws iam delete-role-policy --role-name $roleName --policy-name $($runId)-s3 --output text" | Out-Null } catch {}
-    try { cmd /c "aws iam detach-role-policy --role-name $roleName --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore --output text" | Out-Null } catch {}
-    try { cmd /c "aws iam delete-role --role-name $roleName --output text" | Out-Null } catch {}
-  }
+$benchB64 = ''
+if (-not [string]::IsNullOrWhiteSpace($benchArgsEffective)) {
+  $benchB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($benchArgsEffective))
 }
+
+$remoteTpl = @'
+#!/bin/bash
+set -euo pipefail
+export HOME="${HOME:-/root}"
+export PATH="/usr/local/bin:/root/.local/bin:$PATH"
+export REPO_URL="__REPO__"
+export BRANCH="__BRANCH__"
+export INFRA_IMAGE="__INFRA__"
+export SWARM_IMAGE="__SWARM__"
+export ARCANE_INFRA_IMAGE="$INFRA_IMAGE"
+export ARCANE_SWARM_IMAGE="$SWARM_IMAGE"
+export REMOTE_ROOT="__ROOT__"
+export REMOTE_OUT="__OUT__"
+export S3_DEST="__S3__"
+export AWS_REGION="__REGION__"
+export BENCH_B64="__BENCH_B64__"
+
+until docker info >/dev/null 2>&1 && command -v pwsh >/dev/null 2>&1 && command -v spacetime >/dev/null 2>&1; do
+  echo "waiting for user-data (docker, pwsh, spacetime)..."
+  sleep 10
+done
+
+# Rust + wasm + wasm-opt for host `spacetime build` (keep out of user-data so SSM is not racing cloud-init).
+export HOME="${HOME:-/root}"
+apt-get update -y
+apt-get install -y binaryen pkg-config libssl-dev build-essential || true
+if ! command -v rustc >/dev/null 2>&1; then
+  curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+fi
+if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+rustup target add wasm32-unknown-unknown || true
+export PATH="$HOME/.cargo/bin:/root/.local/bin:$PATH"
+
+# Pre-pull Spacetime (large image); avoid many retries on small disks (fills overlay).
+echo "Pre-pulling SpacetimeDB image..."
+if ! docker pull clockworklabs/spacetime:latest; then
+  docker system prune -af 2>/dev/null || true
+  docker pull clockworklabs/spacetime:latest || true
+fi
+docker image inspect clockworklabs/spacetime:latest >/dev/null 2>&1 || { echo "WARN: spacetime image missing; compose will try to pull"; }
+
+mkdir -p "$REMOTE_ROOT"
+if [ ! -d "$REMOTE_ROOT/.git" ]; then
+  git clone "$REPO_URL" "$REMOTE_ROOT"
+fi
+cd "$REMOTE_ROOT"
+git fetch origin
+if ! git checkout "$BRANCH"; then
+  echo "Branch $BRANCH missing; trying master then main"
+  git checkout master || git checkout main
+fi
+git pull --ff-only || git pull
+
+mkdir -p "$REMOTE_OUT"
+# SpacetimeDB runs in Docker (Run-Benchmark-V2); do not run `spacetime start` on the host or port 3000 conflicts.
+
+set +e
+if [ -n "$BENCH_B64" ]; then
+  EXTRA=$(printf '%s' "$BENCH_B64" | base64 -d)
+  pwsh -NoProfile -Command "& \"$REMOTE_ROOT/scripts/benchmark/Run-Benchmark-V2.ps1\" -OutDir \"$REMOTE_OUT\" $EXTRA"
+else
+  pwsh -NoProfile -File "$REMOTE_ROOT/scripts/benchmark/Run-Benchmark-V2.ps1" -OutDir "$REMOTE_OUT"
+fi
+EC=$?
+set -e
+
+aws s3 sync "$REMOTE_OUT" "$S3_DEST" --region "$AWS_REGION"
+echo "Benchmark exit code: $EC"
+exit $EC
+'@
+
+$remoteBash = $remoteTpl.Replace('__REPO__', (Escape-BashDoubleQuoted $RepoUrl)).
+  Replace('__BRANCH__', (Escape-BashDoubleQuoted $Branch)).
+  Replace('__INFRA__', (Escape-BashDoubleQuoted $InfraImage)).
+  Replace('__SWARM__', (Escape-BashDoubleQuoted $SwarmImage)).
+  Replace('__ROOT__', (Escape-BashDoubleQuoted $remoteRoot)).
+  Replace('__OUT__', (Escape-BashDoubleQuoted $remoteOutDir)).
+  Replace('__S3__', (Escape-BashDoubleQuoted $s3Dest)).
+  Replace('__REGION__', (Escape-BashDoubleQuoted $Region)).
+  Replace('__BENCH_B64__', $benchB64)
+# CRLF breaks #!/bin/bash on Linux (interpreter /bin/bash\r not found)
+$remoteBash = $remoteBash -replace "`r`n", "`n"
+
+$paramsPath = Join-Path $env:TEMP "arcane-ssm-params-$runId.json"
+# One commands[] entry: per-line arrays break env persistence and can split long tokens across invocations.
+$paramObj = @{ commands = @($remoteBash) }
+$jsonParams = $paramObj | ConvertTo-Json -Depth 10 -Compress
+[System.IO.File]::WriteAllText($paramsPath, $jsonParams, [System.Text.UTF8Encoding]::new($false))
+
+$fileUri = Get-AwsCliFileUri $paramsPath
+
+Write-Host 'Sending SSM run command...' -ForegroundColor Cyan
+$sendRaw = aws ssm send-command --region $Region `
+  --instance-ids $instanceId `
+  --document-name 'AWS-RunShellScript' `
+  --comment "Arcane benchmark v2 $runId" `
+  --timeout-seconds 28800 `
+  --parameters "$fileUri" `
+  --output json 2>&1
+if ($LASTEXITCODE -ne 0) {
+  Remove-Item -LiteralPath $paramsPath -Force -ErrorAction SilentlyContinue
+  throw "send-command failed (aws exit $LASTEXITCODE): $sendRaw"
+}
+$sendOut = $sendRaw | ConvertFrom-Json
+
+$cmdId = $sendOut.Command.CommandId
+Remove-Item -LiteralPath $paramsPath -Force -ErrorAction SilentlyContinue
+
+if ([string]::IsNullOrWhiteSpace($cmdId)) { throw 'send-command returned no CommandId' }
+
+Write-Host "CommandId=$cmdId (waiting for completion)..." -ForegroundColor Cyan
+do {
+  Start-Sleep -Seconds 10
+  $invRaw = aws ssm get-command-invocation --region $Region --command-id $cmdId --instance-id $instanceId --output json 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "get-command-invocation failed: $invRaw" }
+  $inv = $invRaw | ConvertFrom-Json
+} while ($inv.Status -in 'Pending', 'InProgress', 'Delayed')
+
+Write-Host "SSM Status: $($inv.Status)" -ForegroundColor $(if ($inv.Status -eq 'Success') { 'Green' } else { 'Yellow' })
+Write-Host '--- stdout (tail) ---' -ForegroundColor DarkGray
+($inv.StandardOutputContent -split "`n" | Select-Object -Last 80) -join "`n"
+Write-Host '--- stderr (tail) ---' -ForegroundColor DarkGray
+($inv.StandardErrorContent -split "`n" | Select-Object -Last 40) -join "`n"
+
+if ($TerminateOnExit) {
+  Write-Host "Terminating $instanceId ..." -ForegroundColor Cyan
+  aws ec2 terminate-instances --region $Region --instance-ids $instanceId | Out-Null
+}
+
+Write-Host "Artifacts: $s3Dest" -ForegroundColor Green
+if ($inv.Status -ne 'Success') { exit 1 }

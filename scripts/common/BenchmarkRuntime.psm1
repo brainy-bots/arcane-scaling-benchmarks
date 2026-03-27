@@ -1,0 +1,42 @@
+function Get-DockerStatsRows {
+  $line = cmd /c "docker stats --no-stream --format `"{{.Name}},{{.CPUPerc}},{{.MemUsage}},{{.NetIO}},{{.BlockIO}}`""
+  $rows = @()
+  foreach ($row in $line) {
+    if (-not [string]::IsNullOrWhiteSpace($row)) {
+      $rows += $row
+    }
+  }
+  return $rows
+}
+
+function Write-DockerStatsCsv {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$OutPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ScenarioTag,
+    [Parameter(Mandatory = $true)]
+    [int]$Players,
+    [Parameter(Mandatory = $true)]
+    [int]$NumServers,
+    [Parameter(Mandatory = $true)]
+    [string[]]$Rows
+  )
+
+  $ts = (Get-Date).ToString('o')
+  foreach ($row in $Rows) {
+    "$ts,$ScenarioTag,$NumServers,$Players,$row" | Add-Content $OutPath
+  }
+}
+
+function Get-LogContainerNames {
+  param(
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [string[]]$ClusterNames
+  )
+
+  return @('arcane-v2-redis', 'arcane-v2-manager') + $ClusterNames
+}
+
+Export-ModuleMember -Function Get-DockerStatsRows, Write-DockerStatsCsv, Get-LogContainerNames

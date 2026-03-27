@@ -13,20 +13,6 @@ services:
           cpus: "1.0"
           memory: 1g
 
-  spacetimedb:
-    image: ${SPACETIME_IMAGE:-clockworklabs/spacetime:latest}
-    container_name: arcane-v2-spacetimedb
-    ports:
-      # Needed because the benchmark harness uses the host `spacetime` CLI to build/publish.
-      - "3000:3000"
-    # Mirrors `docker run clockworklabs/spacetime start`
-    command: ["start"]
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 4g
-
   manager:
     build:
       context: .
