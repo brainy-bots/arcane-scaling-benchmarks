@@ -15,3 +15,9 @@ Thumbs.db
 
 # Rust build outputs
 **/target/
+
+# Benchmark run artifacts (local/cloud smoke/full sweeps)
+scripts/benchmark/v2_runs_*/
+scripts/benchmark/smoke_refactor_*/
+scripts/benchmark/_pull_test/
+scripts/cloud/aws_runs_*/

@@ -1,6 +1,14 @@
 Import-Module "$PSScriptRoot\..\scripts\common\BenchmarkScenario.psm1" -Force
 
 Describe "Benchmark scenario helpers" {
+  It "returns empty cluster config for zero clusters" {
+    $cfg = New-ClusterConfig -ClusterCount 0
+
+    $cfg | Should Not BeNullOrEmpty
+    $cfg.Ids.Count | Should Be 0
+    $cfg.ManagerClusters | Should Be ""
+  }
+
   It "creates cluster config entries for each cluster" {
     $cfg = New-ClusterConfig -ClusterCount 3
 

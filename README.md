@@ -78,6 +78,8 @@ All runs use the same workload so that SpacetimeDB-only and Arcane+SpacetimeDB r
 
 This repository is self-contained: it includes the **orchestration scripts** (`scripts/swarm/Run-ArcaneScalingSweep.ps1`, `Run-SpacetimeDBCeilingSweep.ps1`) plus the benchmark swarm code and the SpacetimeDB module source. The only Git submodule needed is **`arcane/`** (for the Arcane manager/cluster binaries). Clone with `--recurse-submodules` (or run `git submodule update --init --recursive`) so `arcane/` is populated. Step-by-step reproducibility is in [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
 
+Module and script boundaries are documented in [docs/MODULE_INTERACTIONS.md](docs/MODULE_INTERACTIONS.md).
+
 ### 3.3 Single-Machine Constraint
 
 All processes run on one host. Adding clusters therefore **distributes** the same total player load across more processes but **increases** the total replication traffic (each cluster replicates to *N*−1 neighbors). The ceiling is not necessarily monotonic in *N*: it depends on the balance between per-cluster load and replication cost.
