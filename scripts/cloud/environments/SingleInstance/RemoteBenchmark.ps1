@@ -85,10 +85,9 @@ git submodule update --init --recursive
 
 (cd arcane_swarm && cargo build -p arcane-swarm --bin arcane-swarm --release)
 (cd arcane && cargo build -p arcane-infra --bin arcane-manager --features manager --release)
-(cd arcane && cargo build -p arcane-infra --bin arcane-cluster --features "cluster-ws spacetimedb-persist" --release) \
-  || (cd arcane && cargo build -p arcane-infra --bin arcane-cluster --features cluster-ws --release)
+(cd arcane && cargo build -p arcane-infra --bin arcane-cluster --features cluster-ws --release)
 
-(cd spacetimedb_demo/spacetimedb && spacetime build && spacetime publish arcane --yes)
+(cd spacetimedb_demo/spacetimedb && spacetime build && spacetime publish arcane --yes --anonymous -s http://127.0.0.1:3000)
 
 mkdir -p "$REMOTE_OUT"
 set +e
@@ -119,7 +118,11 @@ exit $EC
   $remoteBash = $remoteBash -replace "`r`n", "`n"
 
   $paramsPath = Join-Path $env:TEMP "arcane-ssm-params-$RunId.json"
-  $paramObj = @{ commands = @($remoteBash) }
+  # AWS-RunShellScript defaults to executionTimeout 3600000 ms (1 h); full benchmark + cold build needs longer.
+  $paramObj = @{
+    commands           = @($remoteBash)
+    executionTimeout   = @('28800000')
+  }
   $jsonParams = $paramObj | ConvertTo-Json -Depth 10 -Compress
   [System.IO.File]::WriteAllText($paramsPath, $jsonParams, [System.Text.UTF8Encoding]::new($false))
 
@@ -158,7 +161,7 @@ exit $EC
   Write-Host '--- stderr (tail) ---' -ForegroundColor DarkGray
   ($inv.StandardErrorContent -split "`n" | Select-Object -Last 40) -join "`n"
 
-  Write-Host "Artifacts: $s3Dest" -ForegroundColor Green
+  Write-Host "Staged to S3 (orchestrator downloads to local results dir): $s3Dest" -ForegroundColor Green
 
   [pscustomobject]@{
     Invocation = $inv

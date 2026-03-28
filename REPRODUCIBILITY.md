@@ -58,9 +58,7 @@ cd ..
 
 cd arcane
 cargo build -p arcane-infra --bin arcane-manager --features manager --release
-cargo build -p arcane-infra --bin arcane-cluster --features "cluster-ws spacetimedb-persist" --release
-# If persist feature fails:
-# cargo build -p arcane-infra --bin arcane-cluster --features cluster-ws --release
+cargo build -p arcane-infra --bin arcane-cluster --features cluster-ws --release
 cd ..
 ```
 
@@ -71,7 +69,8 @@ With SpacetimeDB **reachable on port 3000** (Docker from the step above, or your
 ```powershell
 cd spacetimedb_demo\spacetimedb
 spacetime build
-spacetime publish arcane --yes
+# Local Docker: use --anonymous so a saved cloud token does not break JWT checks against the container.
+spacetime publish arcane --yes --anonymous -s http://127.0.0.1:3000
 cd ..\..
 ```
 
@@ -113,4 +112,4 @@ Compare ceiling lines from the script output or CSVs with **arcane-demos** `docs
 
 ## AWS
 
-Optional flow: **`scripts/cloud/Run-Benchmark-Aws.ps1`** (provision → SSM bootstrap → `Run-Benchmark.ps1` → S3; **`-TerminateOnExit`** to destroy the instance). **`Setup-AwsBenchmark.ps1`** / **`Cleanup-AwsBenchmark.ps1`** split provision and teardown; **`-Environment`** selects a topology under `scripts/cloud/environments/` (default `SingleInstance`). See **`scripts/cloud/README.md`** and **`scripts/cloud/environments/README.md`**.
+Optional flow: **`scripts/cloud/Run-Benchmark-Aws.ps1`** (provision → SSM bootstrap → `Run-Benchmark.ps1` → stage via S3 → **download to `results/runs/<Environment>/<runId>/` locally**; **`-TerminateOnExit`** to destroy the instance). **`Setup-AwsBenchmark.ps1`** / **`Cleanup-AwsBenchmark.ps1`** split provision and teardown; **`-Environment`** selects a topology under `scripts/cloud/environments/` (default `SingleInstance`). See **`scripts/cloud/README.md`** and **`scripts/cloud/environments/README.md`**.
