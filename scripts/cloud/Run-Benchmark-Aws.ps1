@@ -67,6 +67,16 @@ foreach ($leaf in @('Setup.ps1', 'RemoteBenchmark.ps1', 'Cleanup.ps1')) {
 Assert-AwsCli
 Assert-IamInstanceProfile -name $IamInstanceProfileName
 
+$resolvedGh = $GithubToken
+if ([string]::IsNullOrWhiteSpace($resolvedGh)) { $resolvedGh = $env:ARCANE_BENCHMARK_GITHUB_TOKEN }
+$githubTokenB64 = ''
+if (-not [string]::IsNullOrWhiteSpace($resolvedGh)) {
+  $githubTokenB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($resolvedGh.Trim()))
+  Write-Host 'GitHub submodule auth: token will be used for git submodule update on the instance.' -ForegroundColor DarkGray
+} else {
+  Write-Warning 'No -GithubToken or ARCANE_BENCHMARK_GITHUB_TOKEN: private submodules will fail to clone on EC2.'
+}
+
 $runId = Get-Date -Format 'yyyyMMdd_HHmmss'
 $state = $null
 
