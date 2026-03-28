@@ -27,9 +27,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $ScriptDir = $PSScriptRoot
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir '..\..')
-$parsingModule = Join-Path $RepoRoot 'scripts\common\BenchmarkParsing.psm1'
-$scenarioModule = Join-Path $RepoRoot 'scripts\common\BenchmarkScenario.psm1'
-$runtimeModule = Join-Path $RepoRoot 'scripts\common\BenchmarkRuntime.psm1'
+$parsingModule = [System.IO.Path]::Combine($RepoRoot, 'scripts', 'common', 'BenchmarkParsing.psm1')
+$scenarioModule = [System.IO.Path]::Combine($RepoRoot, 'scripts', 'common', 'BenchmarkScenario.psm1')
+$runtimeModule = [System.IO.Path]::Combine($RepoRoot, 'scripts', 'common', 'BenchmarkRuntime.psm1')
 Import-Module $parsingModule -Force
 Import-Module $scenarioModule -Force
 Import-Module $runtimeModule -Force
@@ -38,7 +38,7 @@ if ([string]::IsNullOrWhiteSpace($OutDir)) {
 }
 $null = New-Item -ItemType Directory -Path $OutDir -Force
 $compose = Join-Path $RepoRoot 'docker-compose.v2.yml'
-$modulePath = Join-Path $RepoRoot 'spacetimedb_demo\spacetimedb'
+$modulePath = [System.IO.Path]::Combine($RepoRoot, 'spacetimedb_demo', 'spacetimedb')
 $envFile = Join-Path $OutDir '.env.v2'
 $metricsDir = Join-Path $OutDir 'metrics'
 $logsDir = Join-Path $OutDir 'logs'
@@ -72,9 +72,11 @@ function Invoke-SwarmV2Run {
     [Parameter(Mandatory)][string]$DatabaseName,
     [string]$ServerPhysicsArg = ''
   )
+  # Linux engines (EC2) do not resolve host.docker.internal unless mapped to the bridge host.
   $args = @(
     'compose', '-f', $compose, '--env-file', $envFile,
-    'run', '--rm', '--no-deps', '--entrypoint', 'arcane-swarm', 'swarm',
+    'run', '--rm', '--no-deps', '--add-host', 'host.docker.internal:host-gateway',
+    '--entrypoint', 'arcane-swarm', 'swarm',
     '--backend', $Backend
   )
   if (-not [string]::IsNullOrWhiteSpace($ServerPhysicsArg)) { $args += $ServerPhysicsArg }
@@ -153,11 +155,31 @@ function Export-ScenarioLogs([string]$ScenarioTag, [string[]]$ClusterNames) {
   }
 }
 
+function Test-LocalTcpPortOpen {
+  param([string]$ComputerName = '127.0.0.1', [int]$Port = 3000)
+  $client = $null
+  try {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    $client.ReceiveTimeout = 2000
+    $client.SendTimeout = 2000
+    $client.Connect($ComputerName, $Port)
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($null -ne $client) { $client.Dispose() }
+  }
+}
+
+# So Invoke-Compose in finally always has a valid --env-file (MANAGER_CLUSTERS may be empty until first scenario).
+Write-EnvForManager ''
+
 try {
   $serverPhysicsArg = if ($NoServerPhysics) { '' } else { '--server-physics' }
 
-  $spOk = (Test-NetConnection -ComputerName 127.0.0.1 -Port 3000 -WarningAction SilentlyContinue).TcpTestSucceeded
-  if (-not $spOk) { throw "SpacetimeDB host service not reachable on 127.0.0.1:3000. Start it before running v2." }
+  if (-not (Test-LocalTcpPortOpen -ComputerName '127.0.0.1' -Port 3000)) {
+    throw "SpacetimeDB host service not reachable on 127.0.0.1:3000. Start it before running v2."
+  }
 
   # initial env + images (build locally, or pull published refs + tag for compose — AWS sets ARCANE_INFRA_IMAGE / ARCANE_SWARM_IMAGE)
   Write-EnvForManager ''
