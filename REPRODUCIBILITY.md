@@ -64,7 +64,7 @@ Or specific player counts:
 .\Run-SpacetimeDBCeilingSweep.ps1 -PlayerCounts 250,500,750,1000,1250
 ```
 
-Results are appended to `spacetimedb_ceiling_sweep.csv` in the same directory. First run will build/publish the vendored SpacetimeDB module and build the benchmark swarm runtime (`crates/arcane-benchmark-swarm`).
+Results are appended to `spacetimedb_ceiling_sweep.csv` in the same directory. First run will build/publish the vendored SpacetimeDB module and build the benchmark swarm runtime (`arcane_swarm/crates/arcane-swarm`).
 
 ---
 
@@ -86,7 +86,7 @@ Examples:
   `.\Run-ArcaneScalingSweep.ps1 -NumServers 3 -PlayersTotal 4000 -PersistBatchSize 500`
 
 Results are appended to `arcane_scaling_sweep.csv`. Logs (manager and per-cluster) go to `arcane_scaling_logs/`. The first run builds:
-- `crates/arcane-benchmark-swarm` (for `arcane-swarm`)
+- `arcane_swarm/crates/arcane-swarm` (for `arcane-swarm`)
 - `arcane/` (for `arcane-manager` and `arcane-cluster`)
 
 ---

@@ -16,7 +16,7 @@ It is intended as an intermediate step toward multi-host/AWS deployment and bott
 - `redis` container (`redis:7-alpine`)
 - `arcane-manager` container (built from `arcane/`)
 - `arcane-cluster` containers (dynamically started by runner; supports 1..10 clusters)
-- `arcane-swarm` container (built from `crates/arcane-benchmark-swarm`)
+- `arcane-swarm` container (built from `arcane_swarm/crates/arcane-swarm`)
 
 ## Resource limits (defaults)
 

@@ -28,12 +28,13 @@ $ScriptDir = $PSScriptRoot
 $BenchmarkRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 #
 # Benchmark runtime is vendored into this repo:
-# - swarm binary: crates/arcane-benchmark-swarm
+# - swarm binary: arcane_swarm/crates/arcane-swarm
 # - SpacetimeDB module source: spacetimedb_demo/spacetimedb
 #
 $ModulePath = Join-Path $BenchmarkRoot "spacetimedb_demo\spacetimedb"
-$Exe = Join-Path $BenchmarkRoot "crates\arcane-benchmark-swarm\target\release\arcane-swarm.exe"
-$SwarmCrateRoot = Join-Path $BenchmarkRoot "crates\arcane-benchmark-swarm"
+$SwarmWorkspaceRoot = Join-Path $BenchmarkRoot "arcane_swarm"
+$SwarmCrateRoot = Join-Path $SwarmWorkspaceRoot "crates\arcane-swarm"
+$Exe = Join-Path $SwarmWorkspaceRoot "target\release\arcane-swarm.exe"
 if ($OutCsv -eq "") { $OutCsv = Join-Path $ScriptDir "spacetimedb_ceiling_sweep.csv" }
 
 # Canonical parameters (must match Arcane+Spacetime runs for comparable ceilings)
@@ -83,8 +84,8 @@ if (-not $NoPublish) {
 # Build arcane-swarm (vendored in this benchmark repo)
 if (-not (Test-Path $Exe)) {
     Write-Host "Building arcane-swarm (release)..." -ForegroundColor Yellow
-    Push-Location $SwarmCrateRoot
-    cmd /c "cargo build --bin arcane-swarm --release 2>&1"
+    Push-Location $SwarmWorkspaceRoot
+    cmd /c "cargo build -p arcane-swarm --bin arcane-swarm --release 2>&1"
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "Build failed" }
     Pop-Location
 }

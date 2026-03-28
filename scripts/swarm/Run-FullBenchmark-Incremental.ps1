@@ -159,8 +159,9 @@ $arcOutCsv = Join-Path $OutDir "arcane_scaling_sweep_incremental.csv"
 $arcLogDir = Join-Path $OutDir "arcane_scaling_logs_incremental"
 $null = New-Item -ItemType Directory -Path $arcLogDir -Force
 
-$swarmCrateRoot = Join-Path $BenchmarkRoot "crates\arcane-benchmark-swarm"
-$swarmExe = Join-Path $swarmCrateRoot "target\release\arcane-swarm.exe"
+$swarmWorkspaceRoot = Join-Path $BenchmarkRoot "arcane_swarm"
+$swarmCrateRoot = Join-Path $swarmWorkspaceRoot "crates\arcane-swarm"
+$swarmExe = Join-Path $swarmWorkspaceRoot "target\release\arcane-swarm.exe"
 $arcaneRepo = Join-Path $BenchmarkRoot "arcane"
 $arcaneExeManager = Join-Path $arcaneRepo "target\release\arcane-manager.exe"
 $arcaneExeCluster = Join-Path $arcaneRepo "target\release\arcane-cluster.exe"
@@ -184,7 +185,7 @@ if (-not $NoPublish) {
 # Ensure swarm binary built
 if (-not (Test-Path $swarmExe)) {
     Write-Host "Building vendored arcane-swarm..." -ForegroundColor Yellow
-    Ensure-Build -Dir $swarmCrateRoot -CargoArgs "cargo build --bin arcane-swarm --release"
+    Ensure-Build -Dir $swarmWorkspaceRoot -CargoArgs "cargo build -p arcane-swarm --bin arcane-swarm --release"
 }
 
 # Ensure Arcane binaries built (manager + cluster)
@@ -206,7 +207,7 @@ function Run-SpacetimeDB-Incremental([int]$StartPlayers, [int]$Step, [int]$MaxPl
     if (Test-Path $tmpErr) { Remove-Item $tmpErr -Force }
 
     Write-Host "Starting SpacetimeDB swarm control on port $ControlPort..." -ForegroundColor Cyan
-    $proc = Start-Process -FilePath $swarmExe -WorkingDirectory $swarmCrateRoot -PassThru -NoNewWindow `
+    $proc = Start-Process -FilePath $swarmExe -WorkingDirectory $swarmWorkspaceRoot -PassThru -NoNewWindow `
         -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -ArgumentList @(
             "--backend", "spacetimedb",
             "--server-physics",
@@ -341,7 +342,7 @@ foreach ($n in $ArcaneClusterCounts) {
 
     $startPlayers = $ArcaneCeilingStartPlayers
     $maxPlayers = $ArcaneCeilingMaxPlayers
-    $procSwarm = Start-Process -FilePath $swarmExe -WorkingDirectory $swarmCrateRoot -PassThru -NoNewWindow `
+    $procSwarm = Start-Process -FilePath $swarmExe -WorkingDirectory $swarmWorkspaceRoot -PassThru -NoNewWindow `
         -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -ArgumentList @(
             "--backend", "arcane",
             "--players", $startPlayers,
@@ -361,7 +362,7 @@ foreach ($n in $ArcaneClusterCounts) {
     Send-SwarmCommand -Port $controlPort -CommandLine "QUIT"
     Stop-Process -Id $procSwarm.Id -Force -ErrorAction SilentlyContinue
 
-    $procSwarm = Start-Process -FilePath $swarmExe -WorkingDirectory $swarmCrateRoot -PassThru -NoNewWindow `
+    $procSwarm = Start-Process -FilePath $swarmExe -WorkingDirectory $swarmWorkspaceRoot -PassThru -NoNewWindow `
         -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -ArgumentList @(
             "--backend", "arcane",
             "--players", $startPlayers,

@@ -62,8 +62,9 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = $PSScriptRoot
 $BenchmarkRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 
-$SwarmCrateRoot = Join-Path $BenchmarkRoot "crates\arcane-benchmark-swarm"
-$SwarmExe = Join-Path $SwarmCrateRoot "target\release\arcane-swarm.exe"
+$SwarmWorkspaceRoot = Join-Path $BenchmarkRoot "arcane_swarm"
+$SwarmCrateRoot = Join-Path $SwarmWorkspaceRoot "crates\arcane-swarm"
+$SwarmExe = Join-Path $SwarmWorkspaceRoot "target\release\arcane-swarm.exe"
 
 $ArcaneRepo = Join-Path $BenchmarkRoot "arcane"
 $ArcaneManagerExe = Join-Path $ArcaneRepo "target\release\arcane-manager.exe"
@@ -249,7 +250,7 @@ function Run-Scenario-SpacetimeOnly {
     Write-Host "SpacetimeDB-only scenario control port $ControlPort" -ForegroundColor Cyan
     Stop-ListenerOnPort -Port $ControlPort
 
-    $proc = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmCrateRoot -NoNewWindow -PassThru `
+    $proc = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
         -RedirectStandardOutput (Join-Path $StdErrDir "spacetimedb_only_${ControlPort}_stdout.log") `
         -RedirectStandardError $stderr `
         -ArgumentList @(
@@ -389,7 +390,7 @@ function Run-Scenario-Arcane {
     if (Test-Path $stderr) { Remove-Item $stderr -Force }
     if (Test-Path $stdout) { Remove-Item $stdout -Force }
 
-    $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmCrateRoot -NoNewWindow -PassThru `
+    $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
         -RedirectStandardOutput $stdout `
         -RedirectStandardError $stderr `
         -ArgumentList @(
@@ -484,7 +485,7 @@ if (-not (Test-NetConnection -ComputerName $RedisHost -Port $RedisPort -WarningA
 Ensure-SpacetimeRunning
 Publish-Module
 
-Ensure-Binary -Path $SwarmExe -WorkDir $SwarmCrateRoot -BuildCommand "cargo build --bin arcane-swarm --release"
+Ensure-Binary -Path $SwarmExe -WorkDir $SwarmWorkspaceRoot -BuildCommand "cargo build -p arcane-swarm --bin arcane-swarm --release"
 
 if ($ArcaneClusterCounts -and $ArcaneClusterCounts.Count -gt 0) {
     Ensure-Binary -Path $ArcaneManagerExe -WorkDir $ArcaneRepo -BuildCommand "cargo build -p arcane-infra --bin arcane-manager --features manager --release"

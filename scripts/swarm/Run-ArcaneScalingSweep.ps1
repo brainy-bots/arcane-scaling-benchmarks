@@ -52,8 +52,9 @@ $ClusterBasePort = 8090
 $ManagerPort = 8081
 
 # Paths (binaries and vendored runtime)
-$SwarmCrateRoot = Join-Path $BenchmarkRoot "crates\arcane-benchmark-swarm"
-$ExeSwarm = Join-Path $SwarmCrateRoot "target\release\arcane-swarm.exe"
+$SwarmWorkspaceRoot = Join-Path $BenchmarkRoot "arcane_swarm"
+$SwarmCrateRoot = Join-Path $SwarmWorkspaceRoot "crates\arcane-swarm"
+$ExeSwarm = Join-Path $SwarmWorkspaceRoot "target\release\arcane-swarm.exe"
 $ExeCluster = Join-Path $ArcaneRepo "target\release\arcane-cluster.exe"
 $ExeManager = Join-Path $ArcaneRepo "target\release\arcane-manager.exe"
 $ModulePath = Join-Path $BenchmarkRoot "spacetimedb_demo\spacetimedb"
@@ -92,8 +93,8 @@ if (-not $NoPublish) {
 # Build arcane-swarm (vendored in this benchmark repo)
 if (-not (Test-Path $ExeSwarm)) {
     Write-Host "Building arcane-swarm (release)..." -ForegroundColor Yellow
-    Push-Location $SwarmCrateRoot
-    cmd /c "cargo build --bin arcane-swarm --release 2>&1"
+    Push-Location $SwarmWorkspaceRoot
+    cmd /c "cargo build -p arcane-swarm --bin arcane-swarm --release 2>&1"
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "arcane-swarm build failed" }
     Pop-Location
 }
@@ -249,7 +250,7 @@ try {
         "--duration", $CanonicalDurationSec,
         "--mode", $CanonicalMode,
         "--read-rate", $CanonicalReadRateHz
-    ) -WorkingDirectory $SwarmCrateRoot -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -Wait -NoNewWindow -PassThru
+    ) -WorkingDirectory $SwarmWorkspaceRoot -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -Wait -NoNewWindow -PassThru
     $out = Get-Content -Path $tmpOut -Raw -ErrorAction SilentlyContinue
     $err = Get-Content -Path $tmpErr -Raw -ErrorAction SilentlyContinue
     $all = if ($out) { $out } else { "" }; if ($err) { $all += "`n" + $err }
