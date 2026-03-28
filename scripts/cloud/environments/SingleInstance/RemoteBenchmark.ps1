@@ -118,10 +118,10 @@ exit $EC
   $remoteBash = $remoteBash -replace "`r`n", "`n"
 
   $paramsPath = Join-Path $env:TEMP "arcane-ssm-params-$RunId.json"
-  # AWS-RunShellScript defaults to executionTimeout 3600000 ms (1 h); full benchmark + cold build needs longer.
+  # AWS-RunShellScript executionTimeout is seconds (default 3600); max 172800. Full benchmark + cold build needs longer.
   $paramObj = @{
     commands           = @($remoteBash)
-    executionTimeout   = @('28800000')
+    executionTimeout   = @('28800')
   }
   $jsonParams = $paramObj | ConvertTo-Json -Depth 10 -Compress
   [System.IO.File]::WriteAllText($paramsPath, $jsonParams, [System.Text.UTF8Encoding]::new($false))
