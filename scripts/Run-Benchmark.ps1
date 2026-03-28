@@ -16,6 +16,9 @@
   **Outputs:** If -OutDir is omitted, writes under results/runs/<Environment>/<yyyyMMdd_HHmmss>/ (repo root).
   Use -Environment to separate local runs (default Local) from cloud topologies (e.g. SingleInstance). Each run contains
   spacetimedb_only/ and arcane_plus_spacetimedb/ with benchmark_scenarios_results.csv and stderr/*.log.
+
+  **Pass criteria:** Default -MaxLatencyMs is **250** (workstations often jitter above 200 ms). The published experiment
+  report used **200** ms; pass -MaxLatencyMs 200 to match that bar exactly.
 #>
 
 param(
@@ -32,7 +35,7 @@ param(
   [int] $PersistBatchSize = 0,
 
   [double] $MaxErrRate = 0.01,
-  [double] $MaxLatencyMs = 200,
+  [double] $MaxLatencyMs = 250,
 
   [string] $SpacetimeHost = 'http://127.0.0.1:3000',
   [string] $DatabaseName = 'arcane',

@@ -10,7 +10,8 @@ function Invoke-SingleInstanceAwsRemoteBenchmark {
     [string]$ArtifactPrefix = 'benchmark-aws',
     [Parameter(Mandatory)][string]$RepoUrl,
     [Parameter(Mandatory)][string]$Branch,
-    [string]$BenchmarkPwshArgs = ''
+    [string]$BenchmarkPwshArgs = '',
+    [string]$GithubTokenB64 = ''
   )
 
   if ($State.Environment -ne 'SingleInstance') {
@@ -43,6 +44,7 @@ export REMOTE_OUT="__OUT__"
 export S3_DEST="__S3__"
 export AWS_REGION="__REGION__"
 export BENCH_B64="__BENCH_B64__"
+GITHUB_TOKEN_B64="__GITHUB_TOKEN_B64__"
 
 until docker info >/dev/null 2>&1 && command -v pwsh >/dev/null 2>&1 && command -v spacetime >/dev/null 2>&1; do
   echo "waiting for user-data..."
@@ -74,6 +76,11 @@ if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 rustup target add wasm32-unknown-unknown || true
 export PATH="$HOME/.cargo/bin:/root/.local/bin:$PATH"
 
+if [ -n "$GITHUB_TOKEN_B64" ]; then
+  _GH_TOKEN=$(printf '%s' "$GITHUB_TOKEN_B64" | base64 -d)
+  git config --global url."https://x-access-token:${_GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+  unset _GH_TOKEN
+fi
 git submodule update --init --recursive
 
 (cd arcane_swarm && cargo build -p arcane-swarm --bin arcane-swarm --release)
@@ -99,13 +106,16 @@ echo "Benchmark exit code: $EC"
 exit $EC
 '@
 
+  $ghB64 = if ([string]::IsNullOrWhiteSpace($GithubTokenB64)) { '' } else { $GithubTokenB64.Trim() }
+
   $remoteBash = $remoteTpl.Replace('__REPO__', (Escape-BashDoubleQuoted $RepoUrl)).
     Replace('__BRANCH__', (Escape-BashDoubleQuoted $Branch)).
     Replace('__ROOT__', (Escape-BashDoubleQuoted $remoteRoot)).
     Replace('__OUT__', (Escape-BashDoubleQuoted $remoteOutDir)).
     Replace('__S3__', (Escape-BashDoubleQuoted $s3Dest)).
     Replace('__REGION__', (Escape-BashDoubleQuoted $Region)).
-    Replace('__BENCH_B64__', $benchB64)
+    Replace('__BENCH_B64__', $benchB64).
+    Replace('__GITHUB_TOKEN_B64__', $ghB64)
   $remoteBash = $remoteBash -replace "`r`n", "`n"
 
   $paramsPath = Join-Path $env:TEMP "arcane-ssm-params-$RunId.json"

@@ -41,7 +41,10 @@ param(
 
   [string]$BenchmarkPwshArgs = '',
 
-  [string]$StateOutPath = ''
+  [string]$StateOutPath = '',
+
+  # Optional: PAT or OAuth token for private git submodules. If omitted, uses env ARCANE_BENCHMARK_GITHUB_TOKEN.
+  [string]$GithubToken = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,7 +106,8 @@ try {
         -ArtifactPrefix $ArtifactPrefix `
         -RepoUrl $RepoUrl `
         -Branch $Branch `
-        -BenchmarkPwshArgs $BenchmarkPwshArgs
+        -BenchmarkPwshArgs $BenchmarkPwshArgs `
+        -GithubTokenB64 $githubTokenB64
     }
     default {
       throw "Environment '$Environment' has no remote benchmark step in Run-Benchmark-Aws.ps1."

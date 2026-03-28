@@ -14,6 +14,7 @@
 
 1. **AWS CLI** configured (`aws sts get-caller-identity`).
 2. **EC2 instance profile** (`-IamInstanceProfileName`) with `AmazonSSMManagedInstanceCore` and `s3:PutObject` (and list if required) on your artifact bucket.
+3. **Private git submodules:** if `arcane` / `arcane_swarm` / etc. are private, set **`ARCANE_BENCHMARK_GITHUB_TOKEN`** (PAT or `gh auth token`) in your environment before running, or pass **`-GithubToken`**. The instance uses it only to `git submodule update` over HTTPS, then builds.
 
 ## Examples
 
