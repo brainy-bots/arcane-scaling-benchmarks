@@ -17,7 +17,8 @@ param(
   [string]$DatabaseName = 'arcane',
   [string]$SpacetimeHost = 'http://127.0.0.1:3000',
   [string]$OutDir = '',
-  # When set, skip `docker compose build` and use existing local tags (e.g. arcane-v2/infra:latest from GHCR on EC2).
+  # When set, skip `docker compose build` and use arcane-v2/* tags (pull+tag from ARCANE_* env on cloud — see Run-Benchmark-V2-Aws.ps1).
+  [Alias('UsePublishedImages')]
   [switch]$SkipImageBuild,
   # Default is physics ON (game-server-like behavior). Set this switch only for synthetic/network-only profiling.
   [switch]$NoServerPhysics
@@ -53,7 +54,13 @@ function Remove-DockerContainerIfPresent([string]$Name) {
 function Invoke-Compose([string]$ComposeArgs) {
   $prefix = @('compose', '-f', $compose, '--env-file', $envFile)
   $extra = @($ComposeArgs.Trim() -split '\s+')
-  & docker @prefix @extra
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & docker @prefix @extra
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
   if ($LASTEXITCODE -ne 0) { throw "docker compose failed: $ComposeArgs" }
 }
 
@@ -81,7 +88,14 @@ function Invoke-SwarmV2Run {
   )
   if ($Backend -eq 'arcane') { $args += @('--arcane-manager', 'http://manager:8081') }
   $args += @('--uri', 'http://host.docker.internal:3000', '--db', $DatabaseName)
-  & docker @args 2>&1
+  # Native docker writes normal progress to stderr; with $ErrorActionPreference Stop, PS treats that as terminating.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & docker @args 2>&1
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
 }
 
 function Write-EnvForManager([string]$ManagerClusters) {
@@ -97,10 +111,16 @@ function Start-ClusterContainers([string[]]$Ids, [int]$NumServers) {
       if ($j -ne $i) { $neighbors += $Ids[$j] }
     }
     $neighborStr = ($neighbors -join ',')
-    docker rm -f $name 2>$null | Out-Null
-    & docker run -d --name $name --network arcane-v2-net --cpus 1 --memory 2g `
-      -e "CLUSTER_ID=$($Ids[$i])" -e "CLUSTER_WS_PORT=$([int](8090+$i))" -e 'REDIS_URL=redis://redis:6379' `
-      -e "NEIGHBOR_IDS=$neighborStr" arcane-v2/infra:latest arcane-cluster
+    Remove-DockerContainerIfPresent -Name $name
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      & docker run -d --name $name --network arcane-v2-net --cpus 1 --memory 2g `
+        -e "CLUSTER_ID=$($Ids[$i])" -e "CLUSTER_WS_PORT=$([int](8090+$i))" -e 'REDIS_URL=redis://redis:6379' `
+        -e "NEIGHBOR_IDS=$neighborStr" arcane-v2/infra:latest arcane-cluster
+    } finally {
+      $ErrorActionPreference = $prevEap
+    }
     if ($LASTEXITCODE -ne 0) { throw "failed to start cluster container $name" }
     $names += $name
   }
@@ -123,7 +143,13 @@ function Export-ScenarioLogs([string]$ScenarioTag, [string[]]$ClusterNames) {
   $base = Get-LogContainerNames -ClusterNames $ClusterNames
   foreach($c in $base) {
     $p = Join-Path $logsDir ("$ScenarioTag`_$c.log")
-    docker logs $c 2>&1 | Set-Content $p
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      docker logs $c 2>&1 | Set-Content $p
+    } finally {
+      $ErrorActionPreference = $prevEap
+    }
   }
 }
 
@@ -133,10 +159,34 @@ try {
   $spOk = (Test-NetConnection -ComputerName 127.0.0.1 -Port 3000 -WarningAction SilentlyContinue).TcpTestSucceeded
   if (-not $spOk) { throw "SpacetimeDB host service not reachable on 127.0.0.1:3000. Start it before running v2." }
 
-  # initial env + images (build locally, or use pre-tagged images e.g. after docker pull on cloud)
+  # initial env + images (build locally, or pull published refs + tag for compose — AWS sets ARCANE_INFRA_IMAGE / ARCANE_SWARM_IMAGE)
   Write-EnvForManager ''
   if ($SkipImageBuild) {
-    Write-Host 'SkipImageBuild: using existing arcane-v2/infra:latest and arcane-v2/swarm:latest' -ForegroundColor Yellow
+    Write-Host 'SkipImageBuild: using arcane-v2/infra:latest and arcane-v2/swarm:latest' -ForegroundColor Yellow
+    $infraRef = $env:ARCANE_INFRA_IMAGE
+    $swarmRef = $env:ARCANE_SWARM_IMAGE
+    if (-not [string]::IsNullOrWhiteSpace($infraRef)) {
+      $pullPrev = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        docker pull $infraRef
+        if ($LASTEXITCODE -ne 0) { throw "docker pull failed: $infraRef" }
+        docker tag $infraRef arcane-v2/infra:latest
+      } finally {
+        $ErrorActionPreference = $pullPrev
+      }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($swarmRef)) {
+      $pullPrev = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        docker pull $swarmRef
+        if ($LASTEXITCODE -ne 0) { throw "docker pull failed: $swarmRef" }
+        docker tag $swarmRef arcane-v2/swarm:latest
+      } finally {
+        $ErrorActionPreference = $pullPrev
+      }
+    }
   } else {
     Invoke-Compose 'build manager swarm'
   }

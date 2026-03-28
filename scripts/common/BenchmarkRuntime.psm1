@@ -1,9 +1,16 @@
 function Get-DockerStatsRows {
-  $line = cmd /c "docker stats --no-stream --format `"{{.Name}},{{.CPUPerc}},{{.MemUsage}},{{.NetIO}},{{.BlockIO}}`""
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $line = & docker stats --no-stream --format '{{.Name}},{{.CPUPerc}},{{.MemUsage}},{{.NetIO}},{{.BlockIO}}' 2>&1
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
   $rows = @()
   foreach ($row in $line) {
-    if (-not [string]::IsNullOrWhiteSpace($row)) {
-      $rows += $row
+    if ($row -is [System.Management.Automation.ErrorRecord]) { continue }
+    if (-not [string]::IsNullOrWhiteSpace([string]$row)) {
+      $rows += [string]$row
     }
   }
   return $rows

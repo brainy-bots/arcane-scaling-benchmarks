@@ -47,6 +47,9 @@ param(
 
   [switch]$TerminateOnExit,
 
+  # Skip local `docker pull` check for GHCR images (use when Docker is unavailable locally).
+  [switch]$SkipLocalPublicImageCheck,
+
   # Extra arguments passed to Run-Benchmark-V2.ps1 on the instance (quoted string, e.g. '-MaxPlayers 2000 -StartPlayers 250')
   [string]$BenchmarkPwshArgs = ''
 )
@@ -273,6 +276,15 @@ if ! docker pull clockworklabs/spacetime:latest; then
   docker pull clockworklabs/spacetime:latest || true
 fi
 docker image inspect clockworklabs/spacetime:latest >/dev/null 2>&1 || { echo "WARN: spacetime image missing; compose will try to pull"; }
+
+echo "Starting SpacetimeDB on 127.0.0.1:3000 (Run-Benchmark-V2 requirement)..."
+docker rm -f arcane-v2-spacetimedb 2>/dev/null || true
+docker run -d --name arcane-v2-spacetimedb -p 127.0.0.1:3000:3000 clockworklabs/spacetime:latest start
+for i in $(seq 1 90); do
+  if ss -Htan 2>/dev/null | grep -qE ':(3000)\s'; then break; fi
+  if netstat -ltn 2>/dev/null | grep -q ':3000 '; then break; fi
+  sleep 2
+done
 
 mkdir -p "$REMOTE_ROOT"
 if [ ! -d "$REMOTE_ROOT/.git" ]; then
