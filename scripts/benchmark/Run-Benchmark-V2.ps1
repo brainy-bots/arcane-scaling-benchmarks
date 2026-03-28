@@ -44,6 +44,12 @@ $logsDir = Join-Path $OutDir 'logs'
 $null = New-Item -ItemType Directory -Path $metricsDir -Force
 $null = New-Item -ItemType Directory -Path $logsDir -Force
 
+function Remove-DockerContainerIfPresent([string]$Name) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'SilentlyContinue'
+  try { docker rm -f $Name 2>&1 | Out-Null } finally { $ErrorActionPreference = $prev }
+}
+
 function Invoke-Compose([string]$ComposeArgs) {
   $prefix = @('compose', '-f', $compose, '--env-file', $envFile)
   $extra = @($ComposeArgs.Trim() -split '\s+')
@@ -103,7 +109,7 @@ function Start-ClusterContainers([string[]]$Ids, [int]$NumServers) {
 
 function Stop-ClusterContainers([string[]]$Names) {
   foreach($n in $Names) {
-    docker rm -f $n 2>$null | Out-Null
+    Remove-DockerContainerIfPresent -Name $n
   }
 }
 
@@ -195,6 +201,6 @@ try {
 finally {
   try { Invoke-Compose 'down --remove-orphans' } catch {}
   for ($i = 0; $i -lt 12; $i++) {
-    docker rm -f "arcane-v2-cluster-$i" 2>$null | Out-Null
+    Remove-DockerContainerIfPresent -Name "arcane-v2-cluster-$i"
   }
 }
