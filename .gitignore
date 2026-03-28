@@ -16,8 +16,9 @@ Thumbs.db
 # Rust build outputs
 **/target/
 
-# Benchmark run artifacts (local/cloud smoke/full sweeps)
-scripts/benchmark/v2_runs_*/
-scripts/benchmark/smoke_refactor_*/
-scripts/benchmark/_pull_test/
+# Benchmark run outputs (see results/README.md)
+results/runs/
+
+# AWS launcher local state
+scripts/cloud/.benchmark-aws-state*.json
 scripts/cloud/aws_runs_*/

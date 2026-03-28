@@ -1,146 +1,116 @@
 # Reproducing the experiment
 
-This document gives step-by-step instructions to run the same scaling experiments on your machine. The repository is self-contained: it includes the orchestration scripts and vendors the SpacetimeDB module source and swarm runtime code.
+The benchmark is driven by a **single script**: `scripts/Run-Benchmark.ps1`. It does **not** build binaries, pull images, or publish the SpacetimeDB module—you prepare those first, then run the script.
 
-The only Git submodule needed is **`arcane/`** (for the Arcane manager/cluster binaries).
-
----
-
-## Prerequisites
-
-- **Rust** (stable): [rustup.rs](https://rustup.rs)
-- **Redis**: running locally, default `redis://127.0.0.1:6379`
-- **SpacetimeDB**: [Install the CLI](https://spacetimedb.com/docs), then run `spacetime start` in a separate terminal (must be running before the scripts publish the module and during runs).
-- **wasm-opt** (recommended): SpacetimeDB uses it to optimize the WASM module. **Without it, the module runs unoptimized and your ceiling numbers can be lower than the documented results.**  
-  - **Windows:** Run once: `.\scripts\Install-WasmOpt.ps1` (downloads Binaryen and adds it to PATH for that session). Or download [binaryen](https://github.com/WebAssembly/binaryen/releases) manually, extract it, and add the `bin` folder to your PATH.
-- **PowerShell**: scripts are written for Windows PowerShell.
-
-**Full benchmark runtime:** The one-command full benchmark can run **30+ minutes**. Run it in a **separate PowerShell window** (e.g. open a new terminal outside your IDE) so your editor does not freeze. The script will print progress as it runs.
+**Runtime:** A full run can take **30+ minutes**. Use a separate terminal window so your IDE stays responsive.
 
 ---
 
-## 1. Clone the repository and submodules
+## Prerequisites (before `Run-Benchmark.ps1`)
+
+- **PowerShell** 5.1 or **PowerShell 7+** (Windows or Linux).
+- **Rust** (stable) and **wasm32-unknown-unknown** for building the module and swarm: [rustup.rs](https://rustup.rs)
+- **Docker** (recommended): use the **same** Redis + SpacetimeDB containers locally as on EC2 so numbers are comparable to cloud runs.
+- **Git submodules:** `arcane/`, `arcane_swarm/`, etc.
+
+### Redis + SpacetimeDB — same recipe as cloud (recommended)
+
+From the repo root, with Docker running:
 
 ```powershell
-git clone --recurse-submodules https://github.com/martinjms/arcane-scaling-benchmarks.git
-cd arcane-scaling-benchmarks
+# Windows (Git Bash path preferred; otherwise pure PowerShell fallback)
+.\scripts\Start-BenchmarkDeps.ps1
 ```
 
-If you already cloned without `--recurse-submodules`:
+Linux / macOS / WSL:
+
+```bash
+./scripts/start-benchmark-deps.sh
+```
+
+This starts **`redis:7-alpine`** and **`clockworklabs/spacetime:latest`** on **`127.0.0.1:6379`** and **`127.0.0.1:3000`** (container names `arcane-bench-redis`, `arcane-bench-spacetime`). The EC2 launcher runs the **same shell script** after cloning.
+
+Pin the server image to match your CLI (optional):
 
 ```powershell
+$env:SPACETIME_IMAGE = 'clockworklabs/spacetime:2.0.5'
+.\scripts\Start-BenchmarkDeps.ps1
+```
+
+**Alternative:** run Redis and SpacetimeDB **without** Docker (native install, `spacetime start`, etc.) and pass `-RedisHost` / `-SpacetimeHost` if needed. That works, but it is **not** the same environment as the default cloud path—expect small shifts vs EC2.
+
+Stop/remove containers when finished: `docker rm -f arcane-bench-redis arcane-bench-spacetime`
+
+```powershell
+git clone --recurse-submodules https://github.com/brainy-bots/arcane-scaling-benchmarks.git
+cd arcane-scaling-benchmarks
 git submodule update --init --recursive
 ```
 
-You should see `arcane/` populated. The scripts expect it as a sibling directory of the benchmark repo root.
+### Build binaries (you run these)
 
----
-
-## 2. Start Redis and SpacetimeDB
-
-- **Redis:** Start your Redis server (e.g. `redis-server` or Windows service).
-- **SpacetimeDB:** In a separate terminal, run:
-
-  ```powershell
-  spacetime start
-  ```
-
-  Leave it running. The scripts will build and publish the module to it (unless you pass `-NoPublish`).
-
----
-
-## 3. SpacetimeDB-only ceiling sweep
-
-Finds the maximum player count for a single SpacetimeDB module (server-physics).
+From the repo root:
 
 ```powershell
-cd scripts\swarm
-.\Run-SpacetimeDBCeilingSweep.ps1 -FindCeiling -Step 250 -MaxPlayers 2000
+cd arcane_swarm
+cargo build -p arcane-swarm --bin arcane-swarm --release
+cd ..
+
+cd arcane
+cargo build -p arcane-infra --bin arcane-manager --features manager --release
+cargo build -p arcane-infra --bin arcane-cluster --features "cluster-ws spacetimedb-persist" --release
+# If persist feature fails:
+# cargo build -p arcane-infra --bin arcane-cluster --features cluster-ws --release
+cd ..
 ```
 
-Or specific player counts:
+### Publish the module (you run this)
+
+With SpacetimeDB **reachable on port 3000** (Docker from the step above, or your own install). The **SpacetimeDB CLI** on your host talks to that server:
 
 ```powershell
-.\Run-SpacetimeDBCeilingSweep.ps1 -PlayerCounts 250,500,750,1000,1250
+cd spacetimedb_demo\spacetimedb
+spacetime build
+spacetime publish arcane --yes
+cd ..\..
 ```
 
-Results are appended to `spacetimedb_ceiling_sweep.csv` in the same directory. First run will build/publish the vendored SpacetimeDB module and build the benchmark swarm runtime (`arcane_swarm/crates/arcane-swarm`).
+**wasm-opt** (optional): improves WASM optimization for SpacetimeDB builds. See [Binaryen releases](https://github.com/WebAssembly/binaryen/releases).
 
 ---
 
-## 4. Arcane + SpacetimeDB scaling sweep
+## Run the benchmark
 
-Runs N cluster processes, the manager, and the swarm. Use **no batch cap** (default) for the reported ceilings.
+From the repo root (or any directory; paths resolve from the script location):
 
 ```powershell
-.\Run-ArcaneScalingSweep.ps1 -NumServers 2 -PlayersTotal 1000
+.\scripts\Run-Benchmark.ps1
 ```
 
-Examples:
+Outputs go under `results/runs/<Environment>/<yyyyMMdd_HHmmss>/` by default (`-Environment` defaults to `Local`; use another label or match your cloud topology name). Each run has `spacetimedb_only/` and `arcane_plus_spacetimedb/` with `benchmark_scenarios_results.csv` and `stderr/` logs. Override with `-OutDir`. See `results/README.md`.
 
-- 1 cluster, 500 players:  
-  `.\Run-ArcaneScalingSweep.ps1 -NumServers 1 -PlayersTotal 500`
-- 3 clusters, 4000 players (no cap, recommended):  
-  `.\Run-ArcaneScalingSweep.ps1 -NumServers 3 -PlayersTotal 4000`
-- With persist batch cap 500 (for comparison):  
-  `.\Run-ArcaneScalingSweep.ps1 -NumServers 3 -PlayersTotal 4000 -PersistBatchSize 500`
-
-Results are appended to `arcane_scaling_sweep.csv`. Logs (manager and per-cluster) go to `arcane_scaling_logs/`. The first run builds:
-- `arcane_swarm/crates/arcane-swarm` (for `arcane-swarm`)
-- `arcane/` (for `arcane-manager` and `arcane-cluster`)
+Useful switches: `-SpacetimeStep`, `-SpacetimeMaxPlayers`, `-ArcaneCeilingStartPlayers`, `-ArcaneClusterCounts`, `-FindArcaneCeiling:$false`, `-DurationSeconds`, `-PersistBatchSize`. See the script’s comment-based help.
 
 ---
 
-## 5. Optional parameters
+## One run at a time
 
-- **Run-ArcaneScalingSweep.ps1:**  
-  `-NoPublish` (skip SpacetimeDB build/publish), `-OutCsv`, `-LogDir`, `-SpacetimeHost`, `-DatabaseName`, `-PersistBatchSize` (default 0).
-- **Run-SpacetimeDBCeilingSweep.ps1:**  
-  `-NoPublish`, `-OutCsv`, `-RepeatCount`, `-CooldownSeconds`, `-SpacetimeHost`, `-DatabaseName`.
+Ports are fixed (manager 8081, clusters 8090+). Do not run two benchmarks on the same host concurrently.
 
 ---
 
-## 6. Single run at a time
+## Canonical parameters
 
-Do not run multiple sweeps in parallel on the same machine. They use fixed ports (manager 8081, clusters 8090, 8091, …). The scripts stop any existing `arcane-*` processes before starting; run one configuration to completion before starting another.
-
----
-
-## 7. Canonical parameters
-
-All runs use the same workload and pass criteria. See [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md).
-
-## 8. One-command full benchmark
-
-For an end-to-end run (SpacetimeDB-only ceiling + Arcane+SpacetimeDB ceilings for multiple cluster counts), run:
-
-```powershell
-cd scripts\swarm
-.\Run-FullBenchmark-Incremental.ps1
-```
-
-(or `.\Run-FullBenchmark.ps1`; both delegate to `Run-Benchmark-Scenarios.ps1`). The script prints a **ceiling summary** at the end and writes `benchmark_scenarios_results.csv` (columns: `backend`, `num_servers`, `ceiling_players`).
+See [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md).
 
 ---
 
-## 9. Comparing your numbers with documentation
+## Comparing with documentation
 
-After a run, compare the printed ceiling summary (or the CSV) with the results documented in the **arcane-demos** repo:
+Compare ceiling lines from the script output or CSVs with **arcane-demos** `docs/SCALING_EXPERIMENT_RESULTS.md`. Hardware and OS will shift exact numbers.
 
-- **SpacetimeDB only:** Ceiling **1,000 players** (1,250 fails on latency). See `arcane-demos/docs/SCALING_EXPERIMENT_RESULTS.md` §1.
-- **Arcane + SpacetimeDB:** Reference ceilings (with `PersistBatchSize=0`): 1 cluster ≥1,750; 2 clusters 3,000; 3 clusters 3,000–5,000; 4 clusters 4,000; 5 clusters 4,000; 10 clusters 5,500. See `SCALING_EXPERIMENT_RESULTS.md` §§2–5.
+---
 
-Same canonical parameters and pass criteria (err_rate &lt; 1%, lat_avg_ms &lt; 200) are used. Hardware and OS will affect the exact numbers; the doc gives the reference run for comparison.
+## AWS
 
-
-## 10. Benchmark v2 (containerized) 
-
-For the containerized, resource-limited profile (intermediate step toward multi-host deployment), use:
-
-`powershell
-cd scripts\\benchmark
-.\\Run-Benchmark-V2.ps1
-` 
-
-Method details and caveats: [docs/BENCHMARK_V2_METHOD.md](docs/BENCHMARK_V2_METHOD.md).
-
+Optional flow: **`scripts/cloud/Run-Benchmark-Aws.ps1`** (provision → SSM bootstrap → `Run-Benchmark.ps1` → S3; **`-TerminateOnExit`** to destroy the instance). **`Setup-AwsBenchmark.ps1`** / **`Cleanup-AwsBenchmark.ps1`** split provision and teardown; **`-Environment`** selects a topology under `scripts/cloud/environments/` (default `SingleInstance`). See **`scripts/cloud/README.md`** and **`scripts/cloud/environments/README.md`**.

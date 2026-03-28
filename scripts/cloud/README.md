@@ -1,39 +1,43 @@
 # Cloud benchmark (AWS)
 
-## Why `Run-Benchmark-V2-Aws.ps1` was "not recognized"
+## Scripts
 
-`scripts\cloud` previously had only `aws_runs_*` output folders; the launcher script was not in the repo. It is now **`Run-Benchmark-V2-Aws.ps1`** in this directory.
+| Script | Purpose |
+|--------|---------|
+| **`Run-Benchmark-Aws.ps1`** | Full run: provision → SSM (clone, deps, build, `Run-Benchmark.ps1`) → S3 sync → optional terminate. |
+| **`Setup-AwsBenchmark.ps1`** | Provision only; writes a **state JSON** for later cleanup or manual SSM. |
+| **`Cleanup-AwsBenchmark.ps1`** | Tear down using **`-StatePath`** or explicit **`-InstanceId`** / **`-Region`**. |
+
+**Topology** is selected with **`-Environment`** (default `SingleInstance`). Each value maps to `environments/<Name>/`; see [environments/README.md](environments/README.md) to add another (e.g. multi-host).
 
 ## Prerequisites
 
 1. **AWS CLI** configured (`aws sts get-caller-identity`).
-2. **EC2 instance profile** (name passed as `-IamInstanceProfileName`) with:
-   - `AmazonSSMManagedInstanceCore` (SSM)
-   - `s3:PutObject` (and `ListBucket` if needed) on your artifact bucket
-3. **GHCR images must be publicly pullable** (anonymous `docker pull`) from the internet.
-   - Single-path reproducible mode (`-UsePublishedImages` only); no registry auth on EC2.
-   - Before launch, the script runs a local `docker pull` for `-InfraImage` / `-SwarmImage` when `docker` is on PATH (use `-SkipLocalPublicImageCheck` if you have no Docker locally).
+2. **EC2 instance profile** (`-IamInstanceProfileName`) with `AmazonSSMManagedInstanceCore` and `s3:PutObject` (and list if required) on your artifact bucket.
 
-## Example
+## Examples
 
-From this directory:
+Full run (terminate instance when finished):
 
 ```powershell
-# List profiles (pick one name from the output — paste it as-is, no angle brackets):
-aws iam list-instance-profiles --query "InstanceProfiles[*].InstanceProfileName" --output text
-
-.\Run-Benchmark-V2-Aws.ps1 `
-  -ArtifactBucket arcane-benchmark-artifacts-329757307135-us-east-1 `
-  -IamInstanceProfileName arcane-benchmark-ec2-profile `
+.\Run-Benchmark-Aws.ps1 `
+  -ArtifactBucket your-bucket-name `
+  -IamInstanceProfileName your-profile-name `
   -Region us-east-1 `
-  -InfraImage ghcr.io/brainy-bots/arcane-benchmark-infra:v1.0.0 `
-  -SwarmImage ghcr.io/brainy-bots/arcane-benchmark-swarm:v1.0.0
+  -TerminateOnExit
 ```
 
-**PowerShell:** Do not type placeholders like `&lt;name-from-list&gt;` or `&lt;name&gt;` — `<` is a special character. Replace `arcane-benchmark-ec2-profile` with your real profile name (quote it if it has spaces).
+Provision only, then clean up later:
 
-Use your **real** instance profile name (the script rejects the literal placeholder `YourInstanceProfileName`).
+```powershell
+.\Setup-AwsBenchmark.ps1 `
+  -ArtifactBucket your-bucket-name `
+  -IamInstanceProfileName your-profile-name
 
-Optional: `-TerminateOnExit` to stop the instance when the run finishes, `-RepoUrl` / `-Branch` if not using defaults, `-BenchmarkPwshArgs '-MaxPlayers 2000'` for extra `Run-Benchmark-V2.ps1` parameters.
+# ... state file path printed; when finished:
+.\Cleanup-AwsBenchmark.ps1 -StatePath '.\.benchmark-aws-state-YYYYMMDD_HHMMSS.json'
+```
 
-Results sync to `s3://<bucket>/<ArtifactPrefix>/<runId>/` (default prefix `benchmark-v2-aws`).
+Optional: `-Environment SingleInstance`, `-BenchmarkPwshArgs '-SpacetimeMaxPlayers 1000'`, `-RepoUrl`, `-Branch`, `-StateOutPath` on **`Run-Benchmark-Aws.ps1`** to save the same JSON shape as setup for auditing.
+
+Results sync to `s3://<bucket>/<ArtifactPrefix>/<Environment>/<runId>/` (default prefix `benchmark-aws`; `Environment` is e.g. `SingleInstance`). Same tree as on disk under `results/runs/<Environment>/<runId>/` (`spacetimedb_only/`, `arcane_plus_spacetimedb/`).

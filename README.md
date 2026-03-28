@@ -67,6 +67,35 @@ All runs use the same workload so that SpacetimeDB-only and Arcane+SpacetimeDB r
 
 ## 3. Setup
 
+### 3.0 Dependencies
+
+| Requirement | Notes |
+|-------------|--------|
+| **PowerShell 7** (`pwsh`) | Required to run [`scripts/Run-Benchmark.ps1`](scripts/Run-Benchmark.ps1), [`scripts/Start-BenchmarkDeps.ps1`](scripts/Start-BenchmarkDeps.ps1), layout tests, and the [AWS launcher](scripts/cloud/Run-Benchmark-Aws.ps1). **Windows PowerShell 5.1** is not supported for these scripts. |
+| Rust, Docker, Spacetime CLI, built binaries | See [REPRODUCIBILITY.md](REPRODUCIBILITY.md). |
+
+**Install PowerShell 7**
+
+- **Windows:** [Install from the Microsoft Store](https://aka.ms/powershell-release-page) or the MSI/GitHub release assets from the same page. Ensure `pwsh` is on your `PATH`.
+- **macOS** (Homebrew):
+
+  ```bash
+  brew install --cask powershell
+  ```
+
+  Then run scripts with `pwsh` (e.g. `pwsh ./scripts/Run-Benchmark.ps1`).
+
+- **Linux:** Use your distro’s package manager or Microsoft’s install script. **Ubuntu / Debian** (multi-distro script):
+
+  ```bash
+  curl -L -o /tmp/install-powershell.sh https://aka.ms/install-powershell.sh
+  sudo bash /tmp/install-powershell.sh
+  ```
+
+  For distro-specific packages (no script), see [Install PowerShell on Linux](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux).
+
+Verify: `pwsh -Version` should report **7.x**.
+
 ### 3.1 Components
 
 - **Swarm client:** Headless process that spawns *P* logical “players,” each performing the canonical workload (position updates and actions) and reporting success/failure and latency. For Arcane+Spacetime, each player resolves a cluster via a manager (round-robin) and connects to that cluster’s WebSocket.
@@ -76,13 +105,30 @@ All runs use the same workload so that SpacetimeDB-only and Arcane+SpacetimeDB r
 
 ### 3.2 Harness and Scripts
 
-This repository is self-contained: it includes the **orchestration scripts** (`scripts/swarm/Run-ArcaneScalingSweep.ps1`, `Run-SpacetimeDBCeilingSweep.ps1`) plus the benchmark swarm code and the SpacetimeDB module source. The only Git submodule needed is **`arcane/`** (for the Arcane manager/cluster binaries). Clone with `--recurse-submodules` (or run `git submodule update --init --recursive`) so `arcane/` is populated. Step-by-step reproducibility is in [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
+The **single entry script** is [`scripts/Run-Benchmark.ps1`](scripts/Run-Benchmark.ps1) (run with **`pwsh`**, see §3.0): incremental player steps, SpacetimeDB-only then Arcane+SpacetimeDB sweeps. It assumes Redis, SpacetimeDB, published module, and built binaries are already in place (see [REPRODUCIBILITY.md](REPRODUCIBILITY.md)). Submodules include **`arcane/`** and **`arcane_swarm/`**; clone with `--recurse-submodules` (or `git submodule update --init --recursive`).
 
 Module and script boundaries are documented in [docs/MODULE_INTERACTIONS.md](docs/MODULE_INTERACTIONS.md).
 
 ### 3.3 Single-Machine Constraint
 
 All processes run on one host. Adding clusters therefore **distributes** the same total player load across more processes but **increases** the total replication traffic (each cluster replicates to *N*−1 neighbors). The ceiling is not necessarily monotonic in *N*: it depends on the balance between per-cluster load and replication cost.
+
+### 3.4 Pre-flight checks (`Run-Benchmark.ps1`)
+
+Before any scenario runs, the script performs **TCP and file checks**. If one fails, PowerShell throws and exits; the message tells you which check failed. Use this table to fix it.
+
+| Check | What it validates | Typical error text | What to do |
+|--------|-------------------|--------------------|------------|
+| **Redis** | Something accepts TCP on `-RedisHost` / `-RedisPort` (defaults `127.0.0.1:6379`) | `Redis is not reachable at ...` | **Recommended (same as EC2):** `.\scripts\Start-BenchmarkDeps.ps1` or `scripts/start-benchmark-deps.sh` — starts Redis + Spacetime in Docker on localhost. Or start your own Redis and use `-RedisHost` / `-RedisPort`. |
+| **SpacetimeDB** | TCP open on the host and port taken from `-SpacetimeHost` (default `http://127.0.0.1:3000` → port **3000**) | `SpacetimeDB is not reachable at ...` | **Recommended:** use the same deps script as above (includes SpacetimeDB container). Or `spacetime start` / your own container; align with cloud if you want comparable numbers. |
+| **Swarm binary** | File exists at `arcane_swarm/target/release/arcane-swarm` (on Windows, `arcane-swarm.exe`) or at `-SwarmExe` | `Swarm binary not found: ...` | From `arcane_swarm/`: `cargo build -p arcane-swarm --bin arcane-swarm --release`. Or set `-SwarmExe` to your binary path. |
+| **Arcane binaries** | Only when **`-FindArcaneCeiling`** is on **and** `-ArcaneClusterCounts` has at least one entry. Requires `arcane/target/release/arcane-manager` and `arcane-cluster` (`.exe` on Windows), or `-ArcaneManagerExe` / `-ArcaneClusterExe` | `arcane-manager not found` / `arcane-cluster not found` | From `arcane/`, build release manager and cluster (see [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for `cargo` features). Or pass explicit exe paths. |
+
+**Not checked up front:** the script does **not** verify that your SpacetimeDB module is published or that the database name matches `-DatabaseName`. You must publish beforehand (see REPRODUCIBILITY.md). If the port is open but the module is missing or wrong, failures will show up during the run (swarm logs under the run’s `stderr/` folder).
+
+**During a run**, the script waits for the Arcane manager and cluster WebSocket ports and the swarm control port to open. If those time out, the message names the missing component (e.g. `arcane-manager did not open port 8081`); inspect the matching `stderr/*.log` under your `-OutDir` subfolder.
+
+On **Windows**, if a control port is stuck because a previous run left a process listening, the script may use `Get-NetTCPConnection` to free certain ports when available; on other platforms that helper is skipped—manually stop stray `arcane-*` or swarm processes if ports conflict.
 
 ---
 
@@ -108,7 +154,7 @@ Single SpacetimeDB module; physics and persistence in the module.
 
 Arcane clusters replicate via Redis; each cluster persists to SpacetimeDB at 1 Hz with **at most 500 entities per HTTP request** (multiple requests per persist window when entity count &gt; 500).
 
-Representative results (passing runs first; then failing). Full sweep data are written to CSVs by the scripts in `scripts/swarm/`.
+Representative results (passing runs first; then failing). Full sweep data are written to CSVs under the output directory passed to `scripts/Run-Benchmark.ps1` (default under `results/runs/<Environment>/<timestamp>/`, e.g. `Local` or `SingleInstance`; see `results/README.md`).
 
 | Clusters | Players | err_rate_pct | lat_avg_ms | Pass |
 |----------|---------|--------------|------------|------|
@@ -191,15 +237,12 @@ Capping the number of entities per SpacetimeDB HTTP request (e.g. 500) was inten
 
 Full step-by-step instructions are in **[REPRODUCIBILITY.md](REPRODUCIBILITY.md)**. Summary:
 
-1. **Prerequisites:** Rust, Redis (`redis://127.0.0.1:6379`), SpacetimeDB CLI, PowerShell. Start Redis and run `spacetime start` in a separate terminal.
-2. **Clone:** `git clone --recurse-submodules https://github.com/martinjms/arcane-scaling-benchmarks.git` (or clone then `git submodule update --init --recursive`).
-3. **SpacetimeDB-only ceiling:** From repo root,  
-   `.\scripts\swarm\Run-SpacetimeDBCeilingSweep.ps1 -FindCeiling -Step 250 -MaxPlayers 2000`  
-   (optionally `-NoPublish` if the module is already published).
-4. **Arcane+SpacetimeDB scaling:**  
-   `.\scripts\swarm\Run-ArcaneScalingSweep.ps1 -NumServers 2 -PlayersTotal 1000`  
-   Default is no persist batch cap (`-PersistBatchSize 0`); use that for the reported ceilings.
-5. **Outputs:** CSV and logs under `scripts/swarm/` (e.g. `arcane_scaling_sweep.csv`, `spacetimedb_ceiling_sweep.csv`, `arcane_scaling_logs/`). Canonical parameters are in [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md).
+1. **Prepare:** Install **PowerShell 7** (`pwsh`; see §3.0). Then Redis, SpacetimeDB with the module **already published**, and release builds of `arcane-swarm`, `arcane-manager`, and `arcane-cluster` (see REPRODUCIBILITY for exact `cargo` / `spacetime` commands).
+2. **Clone:** `git clone --recurse-submodules` (or `git submodule update --init --recursive`).
+3. **Run:** From the repo root, `pwsh ./scripts/Run-Benchmark.ps1` (on Windows you can use `.\scripts\Run-Benchmark.ps1` if `pwsh` is your default shell). Optional `-OutDir`, tuning parameters as documented in the script.
+4. **Outputs:** Under `results/runs/<Environment>/<yyyyMMdd_HHmmss>/` by default (`-Environment` defaults to `Local`; `spacetimedb_only/` and `arcane_plus_spacetimedb/` with `benchmark_scenarios_results.csv` + `stderr/`). Layout: [results/README.md](results/README.md). Canonical parameters: [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md).
+
+If the script exits immediately with an error, compare it to the **pre-flight checks** in §3.4 (Redis, SpacetimeDB port, binary paths).
 
 ---
 
@@ -216,18 +259,3 @@ Full step-by-step instructions are in **[REPRODUCIBILITY.md](REPRODUCIBILITY.md)
 | Arcane+SpacetimeDB, 10 clusters | 5,500          |
 
 All runs: 10 Hz tick, 2 aps, 30 s, spread, everyone-sees-everyone. Pass: err_rate &lt; 1%, lat_avg_ms &lt; 200.
-
-
-## Benchmark v2 (containerized)
-
-A containerized, resource-limited profile is available as an intermediate step toward multi-host deployment.
-
-Run:
-
-`powershell
-cd scripts\\benchmark
-.\\Run-Benchmark-V2.ps1
-` 
-
-See docs/BENCHMARK_V2_METHOD.md for topology, limits, and caveats.
-
