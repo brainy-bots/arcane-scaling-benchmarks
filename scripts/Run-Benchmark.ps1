@@ -15,6 +15,7 @@
 
   **Outputs:** If -OutDir is omitted, writes under results/runs/<Environment>/<yyyyMMdd_HHmmss>/ (repo root).
   Use -Environment to separate local runs (default Local) from cloud topologies (e.g. SingleInstance). Each run contains
+  **benchmark_run_manifest.json** (effective parameters, pass criteria, binary hashes, host/git metadata) plus
   spacetimedb_only/ and arcane_plus_spacetimedb/ with benchmark_scenarios_results.csv and stderr/*.log.
 
   **Pass criteria:** Default -MaxLatencyMs is **250** (workstations often jitter above 200 ms). The published experiment
@@ -59,6 +60,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Best-effort: text of the command line as PowerShell saw it (often empty with -File from some hosts).
+$BenchmarkHostInvocationLine = $null
+if ($MyInvocation.Line -and $MyInvocation.Line.Trim()) {
+  $BenchmarkHostInvocationLine = $MyInvocation.Line.Trim()
+}
+
 $ScriptDir = $PSScriptRoot
 $BenchmarkRoot = Resolve-Path (Join-Path $ScriptDir '..')
 
@@ -98,6 +105,9 @@ if ([string]::IsNullOrWhiteSpace($OutDir)) {
   $OutDir = Join-Path $BenchmarkRoot (Join-Path 'results' (Join-Path 'runs' (Join-Path $envSeg $runStamp)))
 }
 $null = New-Item -ItemType Directory -Path $OutDir -Force
+$runStartedUtc = [datetime]::UtcNow
+$runSucceeded = $false
+$runErr = $null
 
 function Stop-ArcaneProcesses {
   $procs = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^arcane-' }
@@ -200,6 +210,237 @@ function Assert-ArcaneBinaries {
   if (-not (Test-Path -LiteralPath $ArcaneClusterExe)) {
     throw "arcane-cluster not found: $ArcaneClusterExe. Build before running this script."
   }
+}
+
+function Get-GitHeadOptional([string]$RepoRoot) {
+  $git = Get-Command git -ErrorAction SilentlyContinue
+  if (-not $git) { return $null }
+  Push-Location $RepoRoot
+  try {
+    $h = & git rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $h) { return ($h | Out-String).Trim() }
+  } finally {
+    Pop-Location
+  }
+  return $null
+}
+
+function Get-FileSha256Optional([string]$LiteralPath) {
+  if (-not (Test-Path -LiteralPath $LiteralPath)) { return $null }
+  try {
+    return (Get-FileHash -LiteralPath $LiteralPath -Algorithm SHA256).Hash
+  } catch {
+    return $null
+  }
+}
+
+function Get-BinaryInfo([string]$LiteralPath) {
+  if (-not (Test-Path -LiteralPath $LiteralPath)) {
+    return @{ path = $LiteralPath; sha256 = $null; length_bytes = $null }
+  }
+  $fi = Get-Item -LiteralPath $LiteralPath
+  return @{
+    path         = $LiteralPath
+    sha256       = (Get-FileSha256Optional -LiteralPath $LiteralPath)
+    length_bytes = $fi.Length
+    last_write_utc = $fi.LastWriteTimeUtc.ToString('o')
+  }
+}
+
+function Escape-SingleQuotedPwsh([string]$Text) {
+  if ($null -eq $Text) { return "''" }
+  return "'" + ($Text.Replace("'", "''")) + "'"
+}
+
+function Build-BenchmarkReproCommandLine {
+  $inv = [System.Globalization.CultureInfo]::InvariantCulture
+  $parts = [System.Collections.Generic.List[string]]::new()
+  $null = $parts.Add('pwsh')
+  $null = $parts.Add('-NoProfile')
+  $null = $parts.Add('-File')
+  $null = $parts.Add((Escape-SingleQuotedPwsh $PSCommandPath))
+
+  $ap = {
+    param([string]$Name, $Value)
+    $null = $parts.Add("-$Name")
+    if ($null -eq $Value) {
+      $null = $parts.Add("''")
+      return
+    }
+    if ($Value -is [double] -or $Value -is [float] -or $Value -is [decimal]) {
+      $null = $parts.Add([Convert]::ToDouble($Value).ToString($inv))
+      return
+    }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [byte] -or $Value -is [short]) {
+      $null = $parts.Add($Value.ToString($inv))
+      return
+    }
+    if ($Value -is [string]) {
+      $null = $parts.Add((Escape-SingleQuotedPwsh $Value))
+      return
+    }
+    if ($Value -is [System.Array]) {
+      $null = $parts.Add(($Value -join ','))
+      return
+    }
+    $null = $parts.Add((Escape-SingleQuotedPwsh ([string]$Value)))
+  }
+
+  & $ap 'SpacetimeStep' $SpacetimeStep
+  & $ap 'SpacetimeMaxPlayers' $SpacetimeMaxPlayers
+  & $ap 'DurationSeconds' $DurationSeconds
+  $null = $parts.Add($(if ($FindArcaneCeiling) { '-FindArcaneCeiling' } else { '-FindArcaneCeiling:$false' }))
+  & $ap 'ArcaneClusterCounts' $ArcaneClusterCounts
+  & $ap 'ArcaneCeilingStartPlayers' $ArcaneCeilingStartPlayers
+  & $ap 'ArcaneCeilingStep' $ArcaneCeilingStep
+  & $ap 'ArcaneCeilingMaxPlayers' $ArcaneCeilingMaxPlayers
+  & $ap 'PersistBatchSize' $PersistBatchSize
+  & $ap 'MaxErrRate' $MaxErrRate
+  & $ap 'MaxLatencyMs' $MaxLatencyMs
+  & $ap 'SpacetimeHost' $SpacetimeHost
+  & $ap 'DatabaseName' $DatabaseName
+  & $ap 'RedisHost' $RedisHost
+  & $ap 'RedisPort' $RedisPort
+  & $ap 'TickRateHz' $TickRateHz
+  & $ap 'ActionsPerSec' $ActionsPerSec
+  & $ap 'ReadRateHz' $ReadRateHz
+  & $ap 'SwarmMode' $SwarmMode
+  & $ap 'BetweenIncrementsSeconds' $BetweenIncrementsSeconds
+  & $ap 'SpacetimePersistHz' $SpacetimePersistHz
+  & $ap 'Environment' $Environment
+  & $ap 'OutDir' $OutDir
+  & $ap 'SwarmExe' $SwarmExe
+  & $ap 'ArcaneManagerExe' $ArcaneManagerExe
+  & $ap 'ArcaneClusterExe' $ArcaneClusterExe
+
+  return ($parts -join ' ')
+}
+
+function Export-BenchmarkRunManifest {
+  param(
+    [string]$ManifestPath,
+    [bool]$Succeeded,
+    [string]$ErrorMessage,
+    [datetime]$StartedUtc,
+    [datetime]$FinishedUtc
+  )
+
+  $os = if ($PSVersionTable.PSVersion.Major -ge 6 -and $PSVersionTable.OS) {
+    $PSVersionTable.OS
+  } else {
+    [System.Environment]::OSVersion.VersionString
+  }
+
+  $arcSweep = if ($FindArcaneCeiling) {
+    @{
+      enabled            = $true
+      cluster_counts     = @($ArcaneClusterCounts)
+      start_players      = $ArcaneCeilingStartPlayers
+      step_players       = $ArcaneCeilingStep
+      max_players        = $ArcaneCeilingMaxPlayers
+      duration_seconds_per_tier = $DurationSeconds
+    }
+  } else {
+    @{ enabled = $false }
+  }
+
+  $bin = @{
+    arcane_swarm = (Get-BinaryInfo -LiteralPath $SwarmExe)
+  }
+  if ($FindArcaneCeiling -and ($null -ne $ArcaneClusterCounts) -and ($ArcaneClusterCounts.Count -gt 0)) {
+    $bin.arcane_manager = Get-BinaryInfo -LiteralPath $ArcaneManagerExe
+    $bin.arcane_cluster = Get-BinaryInfo -LiteralPath $ArcaneClusterExe
+  }
+
+  $manifest = [ordered]@{
+    schema_version       = 3
+    find_arcane_ceiling  = [bool]$FindArcaneCeiling
+    run_started_utc  = $StartedUtc.ToString('o')
+    run_finished_utc = $FinishedUtc.ToString('o')
+    run_succeeded    = $Succeeded
+    run_error        = $(if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage })
+    harness          = @{
+      script               = 'Run-Benchmark.ps1'
+      benchmark_repo_root  = [string]$BenchmarkRoot
+      out_dir              = $OutDir
+      pwsh_version         = $PSVersionTable.PSVersion.ToString()
+    }
+    invocation       = @{
+      script_path                  = $PSCommandPath
+      host_powershell_line         = $BenchmarkHostInvocationLine
+      repro_command_pwsh_no_profile = (Build-BenchmarkReproCommandLine)
+    }
+    environment_label = (Get-SafeResultsEnvironmentSegment $Environment)
+    pass_criteria     = @{
+      max_err_rate         = $MaxErrRate
+      max_latency_avg_ms   = $MaxLatencyMs
+    }
+    connectivity      = @{
+      spacetime_host = $SpacetimeHost
+      database_name  = $DatabaseName
+      redis_host     = $RedisHost
+      redis_port     = $RedisPort
+    }
+    swarm_client      = @{
+      simulation_rates = @{
+        tick_rate_hz        = $TickRateHz
+        tick_rate_cli_flag  = '--tick-rate'
+        actions_per_second  = $ActionsPerSec
+        actions_cli_flag    = '--aps'
+        read_refresh_rate_hz = $ReadRateHz
+        read_rate_cli_flag  = '--read-rate'
+        movement_mode       = $SwarmMode
+        mode_cli_flag       = '--mode'
+      }
+      process_flags     = @{
+        duration_seconds_cli = 0
+        duration_cli_flag    = '--duration'
+        run_forever          = $true
+        run_forever_cli_flag = '--run-forever'
+      }
+      harness_timing_seconds = @{
+        after_set_players_before_reset = 2
+        steady_state_per_player_tier   = $DurationSeconds
+        between_player_tiers           = $BetweenIncrementsSeconds
+      }
+      backends          = @{
+        spacetimedb_only = @{
+          backend              = 'spacetimedb'
+          server_physics       = $true
+          server_physics_flag  = '--server-physics'
+        }
+        arcane_plus_spacetimedb = @{
+          backend                 = 'arcane'
+          arcane_manager_base_url = 'http://127.0.0.1:8081'
+          arcane_manager_cli_flag = '--arcane-manager'
+        }
+      }
+    }
+    arcane_persist    = @{
+      spacetimedb_persist_hz        = $SpacetimePersistHz
+      spacetimedb_persist_batch_size = $PersistBatchSize
+    }
+    spacetimedb_only_sweep = @{
+      start_players               = $SpacetimeStep
+      step_players                = $SpacetimeStep
+      max_players                 = $SpacetimeMaxPlayers
+      duration_seconds_per_tier   = $DurationSeconds
+    }
+    arcane_plus_spacetimedb_sweep = $arcSweep
+    binaries          = $bin
+    host              = @{
+      machine_name = [System.Environment]::MachineName
+      os           = $os
+    }
+    git               = @{
+      benchmark_repo_head = (Get-GitHeadOptional -RepoRoot ([string]$BenchmarkRoot))
+      arcane_swarm_head   = (Get-GitHeadOptional -RepoRoot (Join-Path ([string]$BenchmarkRoot) 'arcane_swarm'))
+    }
+  }
+
+  $json = $manifest | ConvertTo-Json -Depth 8
+  Set-Content -LiteralPath $ManifestPath -Value $json -Encoding utf8
+  Write-Host "Run manifest: $ManifestPath" -ForegroundColor DarkGray
 }
 
 function Send-SwarmCommand([int]$Port, [string]$Line) {
@@ -476,7 +717,8 @@ function Invoke-BenchmarkPhase {
 
   Write-Host "`n--- Ceiling summary ---" -ForegroundColor Cyan
   $sp = ($results | Where-Object { $_.backend -eq 'spacetimedb_only' } | Select-Object -First 1).ceiling_players
-  Write-Host "  SpacetimeDB only: ceiling = $sp players"
+  $spLabel = if ($null -eq $sp) { 'none (no passing tier in this sweep)' } else { "$sp" }
+  Write-Host "  SpacetimeDB only: ceiling = $spLabel players"
   foreach ($r in ($results | Where-Object { $_.backend -eq 'arcane_plus_spacetimedb' } | Sort-Object { $_.num_servers })) {
     Write-Host "  Arcane + SpacetimeDB ($($r.num_servers) cluster(s)): ceiling = $($r.ceiling_players) players"
   }
@@ -484,26 +726,41 @@ function Invoke-BenchmarkPhase {
 }
 
 # --- Preconditions only (no builds / publish / image pulls) ---
-Assert-RedisReachable
-Assert-SpacetimeReachable
-Assert-SwarmBinary
-if ($FindArcaneCeiling -and ($null -ne $ArcaneClusterCounts) -and ($ArcaneClusterCounts.Count -gt 0)) {
-  Assert-ArcaneBinaries
+try {
+  Assert-RedisReachable
+  Assert-SpacetimeReachable
+  Assert-SwarmBinary
+  if ($FindArcaneCeiling -and ($null -ne $ArcaneClusterCounts) -and ($ArcaneClusterCounts.Count -gt 0)) {
+    Assert-ArcaneBinaries
+  }
+
+  Write-Host "`n=== Run-Benchmark (incremental) ===" -ForegroundColor Cyan
+  Write-Host "Environment (results subfolder): $(Get-SafeResultsEnvironmentSegment $Environment)" -ForegroundColor Gray
+  Write-Host "Base OutDir: $OutDir" -ForegroundColor Gray
+
+  $spOnlyDir = Join-Path $OutDir 'spacetimedb_only'
+  Invoke-BenchmarkPhase -PhaseOutDir $spOnlyDir -ArcaneCounts @() `
+    -StartPlayers $SpacetimeStep -StepPlayers $SpacetimeStep -MaxPlayers $SpacetimeMaxPlayers
+
+  if ($FindArcaneCeiling) {
+    $arcDir = Join-Path $OutDir 'arcane_plus_spacetimedb'
+    Invoke-BenchmarkPhase -PhaseOutDir $arcDir -ArcaneCounts $ArcaneClusterCounts `
+      -StartPlayers $ArcaneCeilingStartPlayers -StepPlayers $ArcaneCeilingStep -MaxPlayers $ArcaneCeilingMaxPlayers
+  }
+
+  $runSucceeded = $true
+} catch {
+  $runErr = $_.Exception.Message
+  throw
+} finally {
+  $manifestPath = Join-Path $OutDir 'benchmark_run_manifest.json'
+  Export-BenchmarkRunManifest `
+    -ManifestPath $manifestPath `
+    -Succeeded $runSucceeded `
+    -ErrorMessage $runErr `
+    -StartedUtc $runStartedUtc `
+    -FinishedUtc ([datetime]::UtcNow)
+  Stop-ArcaneProcesses
 }
 
-Write-Host "`n=== Run-Benchmark (incremental) ===" -ForegroundColor Cyan
-Write-Host "Environment (results subfolder): $(Get-SafeResultsEnvironmentSegment $Environment)" -ForegroundColor Gray
-Write-Host "Base OutDir: $OutDir" -ForegroundColor Gray
-
-$spOnlyDir = Join-Path $OutDir 'spacetimedb_only'
-Invoke-BenchmarkPhase -PhaseOutDir $spOnlyDir -ArcaneCounts @() `
-  -StartPlayers $SpacetimeStep -StepPlayers $SpacetimeStep -MaxPlayers $SpacetimeMaxPlayers
-
-if ($FindArcaneCeiling) {
-  $arcDir = Join-Path $OutDir 'arcane_plus_spacetimedb'
-  Invoke-BenchmarkPhase -PhaseOutDir $arcDir -ArcaneCounts $ArcaneClusterCounts `
-    -StartPlayers $ArcaneCeilingStartPlayers -StepPlayers $ArcaneCeilingStep -MaxPlayers $ArcaneCeilingMaxPlayers
-}
-
-Stop-ArcaneProcesses
 Write-Host "`nDone." -ForegroundColor Green

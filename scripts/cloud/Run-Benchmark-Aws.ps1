@@ -1,16 +1,22 @@
 <#
 .SYNOPSIS
-  Launch EC2 (or other registered topology), run scripts/Run-Benchmark.ps1 remotely via SSM, sync results to S3.
+  Launch EC2, run scripts/Run-Benchmark.ps1 remotely via SSM, then download results to this machine.
 
 .DESCRIPTION
   Orchestrates environment-specific setup (see environments/<Environment>/), remote bootstrap, benchmark, and
   optional cleanup. To provision or destroy infrastructure alone, use Setup-AwsBenchmark.ps1 and
   Cleanup-AwsBenchmark.ps1.
 
+  **Results:** The instance uploads to S3 (ephemeral disk is lost when the instance terminates). By default this
+  script then **syncs from S3 into your local repo** under `results/runs/<Environment>/<RunId>/` — same layout as a
+  local `Run-Benchmark.ps1` run — so the person running the script has artifacts on disk when the command finishes.
+  Use **-SkipLocalResultsDownload** only if you intentionally want bucket-only artifacts.
+
   **Fail-fast:** After cloning the repo, the SSM script runs **`scripts/start-benchmark-deps.sh`** (the same
   script you can run locally) so Redis + SpacetimeDB in Docker match between laptop and EC2.
 
-  Requires: AWS CLI, instance profile with SSM + S3 PutObject on -ArtifactBucket.
+  Requires: AWS CLI; instance profile with SSM + S3 PutObject on -ArtifactBucket; your IAM user/role needs
+  **s3:GetObject** (and list) on that bucket for the post-run download.
 
 .PARAMETER Environment
   Topology under scripts/cloud/environments/<Name>/. Add new folders and register names in
@@ -44,7 +50,12 @@ param(
   [string]$StateOutPath = '',
 
   # Optional: PAT or OAuth token for private git submodules. If omitted, uses env ARCANE_BENCHMARK_GITHUB_TOKEN.
-  [string]$GithubToken = ''
+  [string]$GithubToken = '',
+
+  # Default: <repo root>/results/runs/<Environment>/<RunId>/ (same shape as local Run-Benchmark.ps1).
+  [string]$LocalResultsDir = '',
+
+  [switch]$SkipLocalResultsDownload
 )
 
 $ErrorActionPreference = 'Stop'
@@ -125,6 +136,27 @@ try {
   }
 
   if ($result.Invocation.Status -ne 'Success') { exit 1 }
+
+  if (-not $SkipLocalResultsDownload) {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $dest = $LocalResultsDir.Trim()
+    if ([string]::IsNullOrWhiteSpace($dest)) {
+      $dest = Join-Path $repoRoot (Join-Path 'results' (Join-Path 'runs' (Join-Path $state.Environment $runId)))
+    } elseif ([System.IO.Path]::IsPathRooted($dest)) {
+      $dest = [System.IO.Path]::GetFullPath($dest)
+    } else {
+      $dest = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).Path, $dest))
+    }
+    $null = New-Item -ItemType Directory -Path $dest -Force
+    Write-Host "Downloading results to: $dest" -ForegroundColor Cyan
+    $syncRaw = aws s3 sync $result.S3Dest $dest --region $Region 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "aws s3 sync to local failed (exit $LASTEXITCODE). Ensure your AWS identity can read $($result.S3Dest). Output: $syncRaw"
+    }
+    Write-Host "Local results: $dest" -ForegroundColor Green
+  } else {
+    Write-Host "Skipped local download (-SkipLocalResultsDownload). Staged copy: $($result.S3Dest)" -ForegroundColor Yellow
+  }
 }
 finally {
   if ($TerminateOnExit -and $null -ne $state) {

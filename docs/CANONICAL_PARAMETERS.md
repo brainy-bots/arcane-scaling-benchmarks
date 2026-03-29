@@ -17,4 +17,4 @@ These parameters are **fixed** across all ceiling/scaling experiments so that Sp
 | **redis_enabled** | true | (Arcane+Spacetime) Replication when num_servers > 1 |
 | **pass_criteria** | err_rate < 1%, lat_avg_ms < 200 | Pass/fail per run |
 
-Scripts print this block at the start of each run and write the same fields into the CSV.
+Effective values for each run are also recorded in **`results/runs/<Environment>/<timestamp>/benchmark_run_manifest.json`** (see `results/README.md`) so CSV ceilings can be compared with exact thresholds and workload settings.

@@ -15,7 +15,7 @@ function Get-Ubuntu2204Ami([string]$reg) {
 function Get-DefaultSubnet([string]$reg) {
   $vpcId = aws ec2 describe-vpcs --region $reg --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text
   if ([string]::IsNullOrWhiteSpace($vpcId) -or $vpcId -eq 'None') { throw 'No default VPC; pass -SubnetId (and -SecurityGroupId).' }
-  $sn = aws ec2 describe-subnets --region $reg --filters Name=vpc-id,Values=$vpcId --query 'Subnets[0].SubnetId' --output text
+  $sn = aws ec2 describe-subnets --region $reg --filters "Name=vpc-id,Values=$vpcId" --query 'Subnets[0].SubnetId' --output text
   if ([string]::IsNullOrWhiteSpace($sn) -or $sn -eq 'None') { throw 'No subnet in default VPC; pass -SubnetId.' }
   return $sn.Trim()
 }

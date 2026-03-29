@@ -22,3 +22,4 @@ results/runs/
 # AWS launcher local state
 scripts/cloud/.benchmark-aws-state*.json
 scripts/cloud/aws_runs_*/
+results/last-ssm-invoke.json
