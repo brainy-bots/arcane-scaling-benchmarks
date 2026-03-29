@@ -1,261 +1,81 @@
-# Arcane Scaling Benchmarks: Experiment Report
+# Arcane scaling benchmarks
 
-**A reproducible study of player-capacity ceilings for a distributed game-simulation stack (Arcane clusters + SpacetimeDB) under a fixed workload.**
+This repository is a **benchmark harness**: scripts and submodules to run a fixed synthetic load (many simulated “players”) against **SpacetimeDB** and against **Arcane + SpacetimeDB**, then record the highest player counts that still meet clear latency and error thresholds.
 
----
-
-## Abstract
-
-We report results from a controlled scaling experiment on a single machine. The system under test is a multiplayer simulation backend in two configurations: (1) **SpacetimeDB only**, with physics and persistence in a single module, and (2) **Arcane plus SpacetimeDB**, where multiple Arcane cluster processes run physics, replicate entity state via Redis, and periodically persist to SpacetimeDB. A headless swarm client drives a canonical workload (10 Hz position updates, 2 actions/s, 30 s, everyone-sees-everyone). We measure client-observed error rate and latency and determine the maximum concurrent player count (ceiling) for which the system stays below 1% error rate and 200 ms average latency.
-
-**Findings:** SpacetimeDB-only ceiling is **1,000 players** (failure at 1,250 is latency-driven). Arcane+SpacetimeDB ceilings depend on cluster count and on the size of persist batches: with a single large persist request per second, we observe **3 clusters sustaining 5,000 players**, **5 clusters sustaining 4,000**, and **10 clusters sustaining 5,500 players**. Introducing a 500-entity cap on persist batch size (multiple HTTP requests per second) increased persist duration and **reduced** the observed ceilings (e.g. 3 clusters at 4,000 players failed with the cap and passed without it). On fixed hardware, adding clusters distributes load but multiplies cross-cluster replication; the ceiling is determined by the tradeoff between per-cluster load and replication cost.
+**Arcane** (the stack exercised here—not the `arcane-engine` workspace folder) is the multiplayer simulation backend from the [`arcane`](https://github.com/brainy-bots/arcane) repo: an **Arcane manager** hands out cluster addresses, one or more **`arcane-cluster`** processes run the simulation tick loop, **Redis** carries cross-cluster replication when you run more than one cluster, and each cluster **persists a batch to SpacetimeDB** on a fixed schedule. The headless load generator lives in the [`arcane_swarm`](https://github.com/brainy-bots/arcane_swarm) submodule.
 
 ---
 
-## 1. Introduction
+## Workload and pass criteria
 
-### 1.1 Objective
+| Parameter | Value |
+|-----------|--------|
+| Position updates (tick rate) | 10 Hz per player |
+| Actions | 2 per second per player |
+| Run duration | 30 s steady state (swarm may add warmup) |
+| Movement mode | `spread` |
+| Visibility | everyone sees everyone |
+| Demo / NPC entities | 0 (players only) |
+| SpacetimeDB-only | physics in module (`server_physics=true`) |
+| Arcane + SpacetimeDB | world read rate 5 Hz per player; persist to SpacetimeDB **1 Hz**; **no** persist batch cap (single request per window, `batch size 0`); **Redis** on when running more than one cluster |
 
-To quantify, under a fixed workload and pass/fail criteria, the maximum number of concurrent simulated players (ceiling) for:
+A step **passes** only if **error rate &lt; 1%** and **average latency &lt; 200 ms** (client-observed). The **ceiling** for a configuration is the largest player count at which a step passed.
 
-- A **SpacetimeDB-only** backend (single module, server-authoritative physics and persistence).
-- An **Arcane + SpacetimeDB** backend (multiple Arcane cluster processes, Redis replication, periodic batch persist to SpacetimeDB).
-
-No claim is made about real-world deployments (network, multiple machines, or different workloads). The experiment is single-machine, headless, and reproducible with the described setup.
-
-### 1.2 Scope
-
-- **Workload:** Deterministic, synthetic client behavior (position updates and actions at fixed rates; no Unreal or other game client).
-- **Metrics:** Client-side success/error counts and average latency for RPC/send operations; server-side tick duration and persist duration where available.
-- **Environment:** One physical (or virtual) host; Redis and SpacetimeDB running locally; all Arcane cluster processes and the swarm on the same host.
-
----
-
-## 2. Experimental Design
-
-### 2.1 Research Questions
-
-1. What is the player ceiling for SpacetimeDB-only under the canonical workload?
-2. How does the ceiling change when the same workload is served by 1, 2, 3, 4, 5, and 10 Arcane clusters with SpacetimeDB persistence?
-3. Does capping the number of entities per SpacetimeDB persist request (batch size) improve or worsen the observed ceiling?
-
-### 2.2 Pass Criteria
-
-A run is **passed** if and only if:
-
-- **Error rate** (client-observed failed or timed-out operations) **< 1%**
-- **Average latency** (client-observed, in ms) **< 200 ms**
-
-The ceiling for a given configuration is the largest player count for which at least one run passes.
-
-### 2.3 Canonical Workload Parameters
-
-All runs use the same workload so that SpacetimeDB-only and Arcane+SpacetimeDB results are comparable.
-
-| Parameter | Value | Description |
-|-----------|--------|-------------|
-| Tick rate | 10 Hz | Position updates per second per player |
-| Actions per second | 2 | Actions (e.g. interact) per second per player |
-| Duration | 30 s | Steady-state phase (additional warmup may apply) |
-| Mode | spread | Movement pattern |
-| Visibility | everyone-sees-everyone | All clients receive all entity positions |
-| Demo entities | 0 | No NPCs; players only |
-| SpacetimeDB persist rate | 1 Hz | (Arcane+Spacetime) Batch persist once per second |
-| Redis | enabled | (Arcane+Spacetime) Replication between clusters when *N* > 1 |
+Full parameter reference: [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md).
 
 ---
 
-## 3. Setup
+## Cloud results (AWS, SingleInstance)
 
-### 3.0 Dependencies
+Latest full cloud run synced locally:
 
-| Requirement | Notes |
-|-------------|--------|
-| **PowerShell 7** (`pwsh`) | Required to run [`scripts/Run-Benchmark.ps1`](scripts/Run-Benchmark.ps1), [`scripts/Start-BenchmarkDeps.ps1`](scripts/Start-BenchmarkDeps.ps1), layout tests, and the [AWS launcher](scripts/cloud/Run-Benchmark-Aws.ps1). **Windows PowerShell 5.1** is not supported for these scripts. |
-| Rust, Docker, Spacetime CLI, built binaries | See [REPRODUCIBILITY.md](REPRODUCIBILITY.md). |
+| Field | Value |
+|--------|--------|
+| Run ID | `20260329_014433` |
+| Environment | `SingleInstance` (one EC2 host runs Redis, SpacetimeDB in Docker, Arcane, and swarm) |
+| Default instance type | `c7i.2xlarge` |
+| Root volume | 100 GiB gp3 |
+| OS image | Ubuntu 22.04 (see `scripts/cloud/environments/SingleInstance/`) |
 
-**Install PowerShell 7**
+**Ceilings (players)**
 
-- **Windows:** [Install from the Microsoft Store](https://aka.ms/powershell-release-page) or the MSI/GitHub release assets from the same page. Ensure `pwsh` is on your `PATH`.
-- **macOS** (Homebrew):
+| Backend | Clusters | Ceiling |
+|---------|----------|---------|
+| SpacetimeDB only | — | **250** |
+| Arcane + SpacetimeDB | 1 | **3,750** |
+| Arcane + SpacetimeDB | 2 | **6,000** |
+| Arcane + SpacetimeDB | 3 | **6,000** |
+| Arcane + SpacetimeDB | 4 | **6,000** |
+| Arcane + SpacetimeDB | 5 | **6,000** |
+| Arcane + SpacetimeDB | 10 | **6,000** |
 
-  ```bash
-  brew install --cask powershell
-  ```
-
-  Then run scripts with `pwsh` (e.g. `pwsh ./scripts/Run-Benchmark.ps1`).
-
-- **Linux:** Use your distro’s package manager or Microsoft’s install script. **Ubuntu / Debian** (multi-distro script):
-
-  ```bash
-  curl -L -o /tmp/install-powershell.sh https://aka.ms/install-powershell.sh
-  sudo bash /tmp/install-powershell.sh
-  ```
-
-  For distro-specific packages (no script), see [Install PowerShell on Linux](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux).
-
-Verify: `pwsh -Version` should report **7.x**.
-
-### 3.1 Components
-
-- **Swarm client:** Headless process that spawns *P* logical “players,” each performing the canonical workload (position updates and actions) and reporting success/failure and latency. For Arcane+Spacetime, each player resolves a cluster via a manager (round-robin) and connects to that cluster’s WebSocket.
-- **SpacetimeDB:** Local instance; for SpacetimeDB-only runs, the module runs physics and persistence; for Arcane+Spacetime, the module receives batch persist calls from each Arcane cluster at 1 Hz.
-- **Arcane clusters:** One process per cluster; each runs a tick loop, applies client updates, merges replicated state from neighbors, and optionally persists the merged view to SpacetimeDB. Clusters discover each other via a manager and replicate via Redis pub/sub.
-- **Redis:** Used by Arcane for cross-cluster replication when the number of clusters is greater than one.
-
-### 3.2 Harness and Scripts
-
-The **single entry script** is [`scripts/Run-Benchmark.ps1`](scripts/Run-Benchmark.ps1) (run with **`pwsh`**, see §3.0): incremental player steps, SpacetimeDB-only then Arcane+SpacetimeDB sweeps. It assumes Redis, SpacetimeDB, published module, and built binaries are already in place (see [REPRODUCIBILITY.md](REPRODUCIBILITY.md)). Submodules include **`arcane/`** and **`arcane_swarm/`**; clone with `--recurse-submodules` (or `git submodule update --init --recursive`).
-
-Module and script boundaries are documented in [docs/MODULE_INTERACTIONS.md](docs/MODULE_INTERACTIONS.md).
-
-### 3.3 Single-Machine Constraint
-
-All processes run on one host. Adding clusters therefore **distributes** the same total player load across more processes but **increases** the total replication traffic (each cluster replicates to *N*−1 neighbors). The ceiling is not necessarily monotonic in *N*: it depends on the balance between per-cluster load and replication cost.
-
-### 3.4 Pre-flight checks (`Run-Benchmark.ps1`)
-
-Before any scenario runs, the script performs **TCP and file checks**. If one fails, PowerShell throws and exits; the message tells you which check failed. Use this table to fix it.
-
-| Check | What it validates | Typical error text | What to do |
-|--------|-------------------|--------------------|------------|
-| **Redis** | Something accepts TCP on `-RedisHost` / `-RedisPort` (defaults `127.0.0.1:6379`) | `Redis is not reachable at ...` | **Recommended (same as EC2):** `.\scripts\Start-BenchmarkDeps.ps1` or `scripts/start-benchmark-deps.sh` — starts Redis + Spacetime in Docker on localhost. Or start your own Redis and use `-RedisHost` / `-RedisPort`. |
-| **SpacetimeDB** | TCP open on the host and port taken from `-SpacetimeHost` (default `http://127.0.0.1:3000` → port **3000**) | `SpacetimeDB is not reachable at ...` | **Recommended:** use the same deps script as above (includes SpacetimeDB container). Or `spacetime start` / your own container; align with cloud if you want comparable numbers. |
-| **Swarm binary** | File exists at `arcane_swarm/target/release/arcane-swarm` (on Windows, `arcane-swarm.exe`) or at `-SwarmExe` | `Swarm binary not found: ...` | From `arcane_swarm/`: `cargo build -p arcane-swarm --bin arcane-swarm --release`. Or set `-SwarmExe` to your binary path. |
-| **Arcane binaries** | Only when **`-FindArcaneCeiling`** is on **and** `-ArcaneClusterCounts` has at least one entry. Requires `arcane/target/release/arcane-manager` and `arcane-cluster` (`.exe` on Windows), or `-ArcaneManagerExe` / `-ArcaneClusterExe` | `arcane-manager not found` / `arcane-cluster not found` | From `arcane/`, build release manager and cluster (see [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for `cargo` features). Or pass explicit exe paths. |
-
-**Not checked up front:** the script does **not** verify that your SpacetimeDB module is published or that the database name matches `-DatabaseName`. You must publish beforehand (see REPRODUCIBILITY.md). If the port is open but the module is missing or wrong, failures will show up during the run (swarm logs under the run’s `stderr/` folder).
-
-**During a run**, the script waits for the Arcane manager and cluster WebSocket ports and the swarm control port to open. If those time out, the message names the missing component (e.g. `arcane-manager did not open port 8081`); inspect the matching `stderr/*.log` under your `-OutDir` subfolder.
-
-On **Windows**, if a control port is stuck because a previous run left a process listening, the script may use `Get-NetTCPConnection` to free certain ports when available; on other platforms that helper is skipped—manually stop stray `arcane-*` or swarm processes if ports conflict.
+Source CSVs under `results/runs/SingleInstance/20260329_014433/` (`spacetimedb_only/` and `arcane_plus_spacetimedb/`). SpacetimeDB-only failed the next step at 500 players on that host (non-zero errors at ~30 ms average latency).
 
 ---
 
-## 4. Results
+## Reproduce the benchmark on AWS
 
-### 4.1 SpacetimeDB Only
+Requirements: **AWS CLI**, an EC2 **instance profile** with SSM + S3 upload, your IAM principal with **S3 read** for sync-down, **PowerShell 7** on your machine to launch the orchestrator. Private submodules need **`ARCANE_BENCHMARK_GITHUB_TOKEN`** (or `-GithubToken`).
 
-Single SpacetimeDB module; physics and persistence in the module.
+From `scripts/cloud/`:
 
-| Players | total_calls | total_errs | err_rate_pct | lat_avg_ms | Pass |
-|--------|-------------|------------|--------------|------------|------|
-| 250    | 93,047      | 0          | 0            | 5.87      | Yes  |
-| 500    | 192,308     | 0          | 0            | 91.68     | Yes  |
-| 750    | 302,546     | 0          | 0            | 68.28     | Yes  |
-| 1000   | 418,164     | 0          | 0            | 183.61    | Yes  |
-| 1250   | 542,789     | 0          | 0            | **688.35** | **No** (latency) |
+```powershell
+$env:ARCANE_BENCHMARK_GITHUB_TOKEN = (gh auth token).Trim()
+.\Run-Benchmark-Aws.ps1 `
+  -ArtifactBucket your-bucket-name `
+  -IamInstanceProfileName your-profile-name `
+  -Region us-east-1 `
+  -TerminateOnExit
+```
 
-**Ceiling: 1,000 players.** Failure at 1,250 is due to latency exceeding the 200 ms threshold, not error rate.
+Results land under `results/runs/SingleInstance/<RunId>/` by default and are also staged under `s3://<bucket>/benchmark-aws/SingleInstance/<RunId>/`.
 
----
+More options (provision-only, pull from S3 later, extra script args): [scripts/cloud/README.md](scripts/cloud/README.md).
 
-### 4.2 Arcane + SpacetimeDB (Persist Batch Cap = 500)
+To **download an existing run** from S3 only:
 
-Arcane clusters replicate via Redis; each cluster persists to SpacetimeDB at 1 Hz with **at most 500 entities per HTTP request** (multiple requests per persist window when entity count &gt; 500).
+```powershell
+.\Sync-AwsBenchmarkResultsFromS3.ps1 -ArtifactBucket your-bucket-name -RunId 20260329_014433 -Region us-east-1
+```
 
-Representative results (passing runs first; then failing). Full sweep data are written to CSVs under the output directory passed to `scripts/Run-Benchmark.ps1` (default under `results/runs/<Environment>/<timestamp>/`, e.g. `Local` or `SingleInstance`; see `results/README.md`).
-
-| Clusters | Players | err_rate_pct | lat_avg_ms | Pass |
-|----------|---------|--------------|------------|------|
-| 4        | 4000    | 0.08         | 2.41       | Yes  |
-| 4        | 3000    | 0.05         | 0.02       | Yes  |
-| 3        | 3000    | 0.02         | 0.04       | Yes  |
-| 2        | 3000    | 0.67         | 0.61       | Yes  |
-| 2        | 3500    | 1.08         | 1.44       | No   |
-| 4        | 5000    | 7.66         | 25.82      | No   |
-| 3        | 4000    | 5.76         | 17.58      | No   |
-| 3        | 5000    | 16.08        | 26.13      | No   |
-| 5        | 4000    | 15.95        | 25.05      | No   |
-| 5        | 5000    | 2.96         | 9.40       | No   |
-
-**Observed ceilings with cap = 500:** 1 cluster ≥1750; 2 clusters 3000; 3 clusters 3000; 4 clusters 4000; 5 clusters 3000.
-
----
-
-### 4.3 Effect of Persist Batch Size (No Cap vs Cap 500)
-
-We repeated selected configurations with **no cap** on persist batch size (single HTTP request per persist window).
-
-| Clusters | Players | With cap 500   | With no cap    |
-|----------|---------|----------------|----------------|
-| 3        | 3000    | Pass (0.02%)   | Pass (0.11%)   |
-| 3        | 4000    | **Fail (5.76%)** | **Pass (0%)**  |
-| 3        | 5000    | Fail (16%)     | **Pass (0.03%)** |
-| 5        | 4000    | Fail (15.95%)  | **Pass (0.49%)** |
-| 4        | 5000    | Fail (7.66%)   | Fail (5.01%)   |
-| 5        | 5000    | Fail (2.96%)   | Fail (16.05%)  |
-
-**Discovery:** With the 500-entity cap, each cluster sends several sequential HTTP requests per persist window; total persist time often reached ~1–2 s and blocked the tick loop, increasing client errors. With no cap, a single large request often completed in ~200–800 ms. For this workload, **removing the batch cap improved ceilings** (e.g. 3 clusters at 4,000 and 5,000 pass without cap and fail with cap). We therefore use **no cap** (single request per persist) for the remaining reported runs.
-
----
-
-### 4.4 Arcane + SpacetimeDB (No Cap) — Extended Sweep
-
-| Clusters | Players | err_rate_pct | lat_avg_ms | Pass |
-|----------|---------|--------------|------------|------|
-| 3        | 4000    | 0            | 0          | Yes  |
-| 3        | 5000    | 0.03         | 2.2        | Yes  |
-| 5        | 4000    | 0.49         | 5.4        | Yes  |
-| 4        | 5000    | 5.01         | 26.4       | No   |
-| 5        | 5000    | 16.05        | 14.2       | No   |
-
----
-
-### 4.5 Ten Clusters (No Cap) — Ceiling Sweep
-
-With 10 clusters, per-cluster load is lower (fewer entities per cluster) but each cluster replicates to 9 neighbors. On the same hardware, load is distributed and replication is multiplied.
-
-| Clusters | Players | err_rate_pct | lat_avg_ms | Pass |
-|----------|---------|--------------|------------|------|
-| 10       | 5000    | 0.03         | 13.8       | Yes  |
-| 10       | 5500    | 0.95         | 30.8       | Yes  |
-| 10       | 5750    | 1.58         | 22.2       | No   |
-| 10       | 6000    | 4.43         | 19.8       | No   |
-
-**10-cluster ceiling: 5,500 players** (5,500 passes at 0.95%; 5,750 fails at 1.58%).
-
----
-
-## 5. Discussion
-
-### 5.1 SpacetimeDB-Only vs Arcane+SpacetimeDB
-
-Under the same workload and pass criteria, the SpacetimeDB-only configuration tops out at 1,000 players (latency-bound). With Arcane+SpacetimeDB and multiple clusters, we observe higher ceilings (e.g. 3,000–5,500 depending on cluster count and persist batching). The comparison is not a general “which is better” statement; it is specific to this single-machine, headless, synthetic workload and to the chosen criteria.
-
-### 5.2 Cluster Count and Replication
-
-Adding clusters reduces the number of entities per cluster but increases the number of replication partners per cluster (*N*−1). On a single machine, total replication traffic grows with *N*. We observed that 3 clusters can sustain 5,000 players (no cap) while 5 clusters at 5,000 failed; 10 clusters at 5,000 and 5,500 passed. So the ceiling is not monotonic in *N*: it reflects the tradeoff between lower per-cluster load and higher replication cost.
-
-### 5.3 Persist Batch Size
-
-Capping the number of entities per SpacetimeDB HTTP request (e.g. 500) was intended to better utilize SpacetimeDB’s request throughput. In practice, multiple sequential requests per persist window extended the time the tick loop spent in persist and increased client-visible errors. For this workload, a single large request per second performed better. We do not generalize beyond this workload and environment.
-
----
-
-## 6. Reproducibility
-
-Full step-by-step instructions are in **[REPRODUCIBILITY.md](REPRODUCIBILITY.md)**. Summary:
-
-1. **Prepare:** Install **PowerShell 7** (`pwsh`; see §3.0). Then Redis, SpacetimeDB with the module **already published**, and release builds of `arcane-swarm`, `arcane-manager`, and `arcane-cluster` (see REPRODUCIBILITY for exact `cargo` / `spacetime` commands).
-2. **Clone:** `git clone --recurse-submodules` (or `git submodule update --init --recursive`).
-3. **Run:** From the repo root, `pwsh ./scripts/Run-Benchmark.ps1` (on Windows you can use `.\scripts\Run-Benchmark.ps1` if `pwsh` is your default shell). Optional `-OutDir`, tuning parameters as documented in the script.
-4. **Outputs:** Under `results/runs/<Environment>/<yyyyMMdd_HHmmss>/` by default (`-Environment` defaults to `Local`; `spacetimedb_only/` and `arcane_plus_spacetimedb/` with `benchmark_scenarios_results.csv` + `stderr/`). Layout: [results/README.md](results/README.md). Canonical parameters: [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md).
-
-If the script exits immediately with an error, compare it to the **pre-flight checks** in §3.4 (Redis, SpacetimeDB port, binary paths).
-
----
-
-## 7. Summary of Ceilings (No Cap, Single Machine)
-
-| Configuration              | Ceiling (players) |
-|----------------------------|--------------------|
-| SpacetimeDB only           | 1,000              |
-| Arcane+SpacetimeDB, 1 cluster  | ≥1,750         |
-| Arcane+SpacetimeDB, 2 clusters | 3,000           |
-| Arcane+SpacetimeDB, 3 clusters | 5,000           |
-| Arcane+SpacetimeDB, 4 clusters | 4,000           |
-| Arcane+SpacetimeDB, 5 clusters | 4,000           |
-| Arcane+SpacetimeDB, 10 clusters | 5,500          |
-
-All runs: 10 Hz tick, 2 aps, 30 s, spread, everyone-sees-everyone. Pass: err_rate &lt; 1%, lat_avg_ms &lt; 200.
+Local runs (no AWS) use the same workload via `scripts/Run-Benchmark.ps1`; see [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
