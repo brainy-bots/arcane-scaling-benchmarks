@@ -117,45 +117,11 @@ exit $EC
     Replace('__GITHUB_TOKEN_B64__', $ghB64)
   $remoteBash = $remoteBash -replace "`r`n", "`n"
 
-  $paramsPath = Join-Path $env:TEMP "arcane-ssm-params-$RunId.json"
-  # AWS-RunShellScript executionTimeout is seconds (default 3600); max 172800. Full benchmark + cold build needs longer.
-  $paramObj = @{
-    commands           = @($remoteBash)
-    executionTimeout   = @('28800')
-  }
-  $jsonParams = $paramObj | ConvertTo-Json -Depth 10 -Compress
-  [System.IO.File]::WriteAllText($paramsPath, $jsonParams, [System.Text.UTF8Encoding]::new($false))
-
-  $fileUri = Get-AwsCliFileUri $paramsPath
-
   Write-Host 'Sending SSM run command...' -ForegroundColor Cyan
-  $sendRaw = aws ssm send-command --region $Region `
-    --instance-ids $instanceId `
-    --document-name 'AWS-RunShellScript' `
-    --comment "Arcane benchmark $RunId" `
-    --timeout-seconds 28800 `
-    --parameters "$fileUri" `
-    --output json 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    Remove-Item -LiteralPath $paramsPath -Force -ErrorAction SilentlyContinue
-    throw "send-command failed: $sendRaw"
-  }
-  $sendOut = $sendRaw | ConvertFrom-Json
+  $cmdId = Send-SsmRunShellScript -Region $Region -InstanceId $instanceId -ScriptBody $remoteBash `
+    -Comment "Arcane benchmark $RunId" -TimeoutSeconds 28800
 
-  $cmdId = $sendOut.Command.CommandId
-  Remove-Item -LiteralPath $paramsPath -Force -ErrorAction SilentlyContinue
-
-  if ([string]::IsNullOrWhiteSpace($cmdId)) { throw 'send-command returned no CommandId' }
-
-  Write-Host "CommandId=$cmdId (waiting)..." -ForegroundColor Cyan
-  do {
-    Start-Sleep -Seconds 10
-    $invRaw = aws ssm get-command-invocation --region $Region --command-id $cmdId --instance-id $instanceId --output json 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "get-command-invocation failed: $invRaw" }
-    $inv = $invRaw | ConvertFrom-Json
-  } while ($inv.Status -in 'Pending', 'InProgress', 'Delayed')
-
-  Write-Host "SSM Status: $($inv.Status)" -ForegroundColor $(if ($inv.Status -eq 'Success') { 'Green' } else { 'Yellow' })
+  $inv = Wait-SsmCommandInvocation -Region $Region -InstanceId $instanceId -CommandId $cmdId -Label 'SSM' -PollSeconds 10
   Write-Host '--- stdout (tail) ---' -ForegroundColor DarkGray
   ($inv.StandardOutputContent -split "`n" | Select-Object -Last 80) -join "`n"
   Write-Host '--- stderr (tail) ---' -ForegroundColor DarkGray

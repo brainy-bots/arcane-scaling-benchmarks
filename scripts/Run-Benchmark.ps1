@@ -23,6 +23,7 @@
 #>
 
 param(
+  [string] $ConfigFile = '',
   [int] $SpacetimeStep = 250,
   [int] $SpacetimeMaxPlayers = 2000,
   [int] $DurationSeconds = 30,
@@ -48,6 +49,14 @@ param(
   [double] $ActionsPerSec = 2,
   [double] $ReadRateHz = 5,
   [string] $SwarmMode = 'spread',
+  [switch] $BurstEnabled = $true,
+  [int] $BurstPeriodSecs = 30,
+  [int] $BurstCohortPercent = 20,
+  [int] $BurstActionsPerPlayer = 10,
+  [int] $BurstWindowMs = 500,
+  [int] $ZoneEventPeriodSecs = 30,
+  [int] $ZoneEventWindowMs = 500,
+
   [int] $BetweenIncrementsSeconds = 1,
   [int] $SpacetimePersistHz = 1,
 
@@ -60,6 +69,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'BenchmarkHarnessHelpers.ps1')
+
+Merge-ConfigFileParameters -Path $ConfigFile
+
 # Best-effort: text of the command line as PowerShell saw it (often empty with -File from some hosts).
 $BenchmarkHostInvocationLine = $null
 if ($MyInvocation.Line -and $MyInvocation.Line.Trim()) {
@@ -68,13 +81,6 @@ if ($MyInvocation.Line -and $MyInvocation.Line.Trim()) {
 
 $ScriptDir = $PSScriptRoot
 $BenchmarkRoot = Resolve-Path (Join-Path $ScriptDir '..')
-
-function Get-SafeResultsEnvironmentSegment([string]$name) {
-  if ([string]::IsNullOrWhiteSpace($name)) { return 'Local' }
-  $s = $name.Trim() -replace '[<>:"/\\|?*]', '_'
-  if ([string]::IsNullOrWhiteSpace($s)) { return 'Local' }
-  return $s
-}
 
 function Get-ExeSuffix {
   if ($PSVersionTable.PSVersion.Major -ge 6) {
@@ -259,6 +265,10 @@ function Build-BenchmarkReproCommandLine {
   $null = $parts.Add('-NoProfile')
   $null = $parts.Add('-File')
   $null = $parts.Add((Escape-SingleQuotedPwsh $PSCommandPath))
+  if (-not [string]::IsNullOrWhiteSpace($ConfigFile)) {
+    $null = $parts.Add('-ConfigFile')
+    $null = $parts.Add((Escape-SingleQuotedPwsh $ConfigFile))
+  }
 
   $ap = {
     param([string]$Name, $Value)
@@ -305,6 +315,13 @@ function Build-BenchmarkReproCommandLine {
   & $ap 'ActionsPerSec' $ActionsPerSec
   & $ap 'ReadRateHz' $ReadRateHz
   & $ap 'SwarmMode' $SwarmMode
+  $null = $parts.Add($(if ($BurstEnabled) { '-BurstEnabled' } else { '-BurstEnabled:$false' }))
+  & $ap 'BurstPeriodSecs' $BurstPeriodSecs
+  & $ap 'BurstCohortPercent' $BurstCohortPercent
+  & $ap 'BurstActionsPerPlayer' $BurstActionsPerPlayer
+  & $ap 'BurstWindowMs' $BurstWindowMs
+  & $ap 'ZoneEventPeriodSecs' $ZoneEventPeriodSecs
+  & $ap 'ZoneEventWindowMs' $ZoneEventWindowMs
   & $ap 'BetweenIncrementsSeconds' $BetweenIncrementsSeconds
   & $ap 'SpacetimePersistHz' $SpacetimePersistHz
   & $ap 'Environment' $Environment
@@ -368,6 +385,7 @@ function Export-BenchmarkRunManifest {
     invocation       = @{
       script_path                  = $PSCommandPath
       host_powershell_line         = $BenchmarkHostInvocationLine
+      config_file                  = $(if ([string]::IsNullOrWhiteSpace($ConfigFile)) { $null } else { (Resolve-Path -LiteralPath $ConfigFile).Path })
       repro_command_pwsh_no_profile = (Build-BenchmarkReproCommandLine)
     }
     environment_label = (Get-SafeResultsEnvironmentSegment $Environment)
@@ -391,6 +409,15 @@ function Export-BenchmarkRunManifest {
         read_rate_cli_flag  = '--read-rate'
         movement_mode       = $SwarmMode
         mode_cli_flag       = '--mode'
+        burst_profile       = @{
+          enabled = [bool]$BurstEnabled
+          burst_period_secs = $BurstPeriodSecs
+          burst_cohort_percent = $BurstCohortPercent
+          burst_actions_per_player = $BurstActionsPerPlayer
+          burst_window_ms = $BurstWindowMs
+          zone_event_period_secs = $ZoneEventPeriodSecs
+          zone_event_window_ms = $ZoneEventWindowMs
+        }
       }
       process_flags     = @{
         duration_seconds_cli = 0
@@ -454,7 +481,7 @@ function Send-SwarmCommand([int]$Port, [string]$Line) {
 }
 
 function Parse-SwarmFinal([string] $Text) {
-  $re = 'FINAL:\s*players=(\d+)\s+total_calls=(\d+)\s+total_oks=(\d+)\s+total_errs=(\d+)\s+lat_avg_ms=([\d.]+)'
+  $re = 'FINAL:\s*players=(\d+)\s+total_calls=(\d+)\s+total_oks=(\d+)\s+total_errs=(\d+)\s+lat_avg_ms=([\d.]+)(?:\s+err_json=(\{.*?\}))?'
   $all = [regex]::Matches($Text, $re)
   if ($all.Count -eq 0) { return $null }
 
@@ -465,6 +492,7 @@ function Parse-SwarmFinal([string] $Text) {
     total_oks    = [long]$m.Groups[3].Value
     total_errs   = [long]$m.Groups[4].Value
     lat_avg_ms   = [double]$m.Groups[5].Value
+    err_json     = $m.Groups[6].Value
   }
 }
 
@@ -491,10 +519,7 @@ function Run-Scenario-SpacetimeOnly {
   Write-Host "SpacetimeDB-only scenario (control port $ControlPort)" -ForegroundColor Cyan
   Stop-ListenerOnPort -Port $ControlPort
 
-  $proc = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
-    -RedirectStandardOutput (Join-Path $stdErrDir "spacetimedb_only_${ControlPort}_stdout.log") `
-    -RedirectStandardError $stderr `
-    -ArgumentList @(
+  $swarmArgs = @(
     '--backend', 'spacetimedb',
     '--server-physics',
     '--players', $ScenarioStartPlayers,
@@ -509,6 +534,23 @@ function Run-Scenario-SpacetimeOnly {
     '--uri', $SpacetimeHost,
     '--db', $DatabaseName
   )
+  if ($BurstEnabled) {
+    $swarmArgs += @(
+      '--burst-enabled',
+      '--burst-period-secs', $BurstPeriodSecs,
+      '--burst-cohort-percent', $BurstCohortPercent,
+      '--burst-actions-per-player', $BurstActionsPerPlayer,
+      '--burst-window-ms', $BurstWindowMs,
+      '--zone-event-period-secs', $ZoneEventPeriodSecs,
+      '--zone-event-window-ms', $ZoneEventWindowMs
+    )
+  } else {
+    $swarmArgs += @('--burst-disabled')
+  }
+  $proc = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
+    -RedirectStandardOutput (Join-Path $stdErrDir "spacetimedb_only_${ControlPort}_stdout.log") `
+    -RedirectStandardError $stderr `
+    -ArgumentList $swarmArgs
 
   if (-not (Wait-TcpOpen -TcpHost '127.0.0.1' -Port $ControlPort -TimeoutSeconds 20)) {
     throw "swarm control port $ControlPort was not opened (spacetime-only scenario)"
@@ -629,10 +671,7 @@ function Run-Scenario-Arcane {
   if (Test-Path $stderr) { Remove-Item $stderr -Force }
   if (Test-Path $stdout) { Remove-Item $stdout -Force }
 
-  $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
-    -RedirectStandardOutput $stdout `
-    -RedirectStandardError $stderr `
-    -ArgumentList @(
+  $swarmArgs = @(
     '--backend', 'arcane',
     '--players', $ScenarioStartPlayers,
     '--max-players', $ScenarioMaxPlayers,
@@ -647,6 +686,23 @@ function Run-Scenario-Arcane {
     '--uri', $SpacetimeHost,
     '--db', $DatabaseName
   )
+  if ($BurstEnabled) {
+    $swarmArgs += @(
+      '--burst-enabled',
+      '--burst-period-secs', $BurstPeriodSecs,
+      '--burst-cohort-percent', $BurstCohortPercent,
+      '--burst-actions-per-player', $BurstActionsPerPlayer,
+      '--burst-window-ms', $BurstWindowMs,
+      '--zone-event-period-secs', $ZoneEventPeriodSecs,
+      '--zone-event-window-ms', $ZoneEventWindowMs
+    )
+  } else {
+    $swarmArgs += @('--burst-disabled')
+  }
+  $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr `
+    -ArgumentList $swarmArgs
 
   if (-not (Wait-TcpOpen -TcpHost '127.0.0.1' -Port $ControlPort -TimeoutSeconds 20)) {
     throw "swarm control port $ControlPort was not opened"

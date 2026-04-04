@@ -3,8 +3,14 @@
   Tear down AWS benchmark infrastructure (from saved state or explicit IDs).
 
 .DESCRIPTION
-  Prefer -StatePath from Setup-AwsBenchmark.ps1 or a Run-Benchmark-Aws.ps1 run that saved state.
-  Alternatively pass -InstanceId and -Region (and security group fields if a temporary SG was created).
+  **Preferred:** pass **-StatePath** to the JSON written by Setup-AwsBenchmark.ps1 or by Run-Benchmark-Aws.ps1
+  (-StateOutPath). That file is the source of truth for instance IDs and the temporary security group.
+
+  **SingleInstance only:** you may omit -StatePath and pass **-Environment SingleInstance** with **-InstanceId**,
+  **-Region**, and optional **-SecurityGroupId** / **-CreatedSecurityGroup** when you created the SG in the same run.
+
+  **DistributedComponents:** **-StatePath is required.** This topology provisions three EC2 instances; manual
+  -InstanceId is not supported and would not tear down Redis/Spacetime/driver correctly.
 
 .PARAMETER SkipSecurityGroupDelete
   If set, do not delete a security group even when CreatedSecurityGroup is true.
@@ -60,6 +66,9 @@ if (-not (Test-Path -LiteralPath $cleanupPath)) { throw "Missing environment scr
 Assert-AwsCli
 
 if ($null -eq $state) {
+  if ($Environment -eq 'DistributedComponents') {
+    throw 'DistributedComponents requires -StatePath (JSON from setup or orchestrator). Manual -InstanceId is only valid for SingleInstance.'
+  }
   if ([string]::IsNullOrWhiteSpace($InstanceId) -or [string]::IsNullOrWhiteSpace($Region)) {
     throw 'Without -StatePath, you must pass -InstanceId and -Region.'
   }
@@ -72,17 +81,7 @@ if ($null -eq $state) {
   }
 }
 
-switch ($Environment) {
-  'SingleInstance' {
-    if ($SkipSecurityGroupDelete) {
-      Remove-SingleInstanceAwsBenchmarkEnvironment -State $state -SkipSecurityGroupDelete
-    } else {
-      Remove-SingleInstanceAwsBenchmarkEnvironment -State $state
-    }
-  }
-  default {
-    throw "Environment '$Environment' has no cleanup implementation in Cleanup-AwsBenchmark.ps1."
-  }
-}
+. (Join-Path $PSScriptRoot 'Common/AwsBenchmarkEnvironmentRegistry.ps1')
+Invoke-BenchmarkAwsEnvironmentRemove -Environment $Environment -State $state -SkipSecurityGroupDelete:$SkipSecurityGroupDelete
 
 Write-Host 'Cleanup finished.' -ForegroundColor Green

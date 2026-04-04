@@ -41,6 +41,10 @@ $env:SPACETIME_IMAGE = 'clockworklabs/spacetime:2.0.5'
 
 Stop/remove containers when finished: `docker rm -f arcane-bench-redis arcane-bench-spacetime`
 
+### Networking and published ceilings
+
+Docker on **Windows** or **macOS** does not support a portable, in-repo way to inject realistic **inter-machine** RTT the way Linux-only `tc`/`netem` on the host would. The harness is aimed at **PowerShell 7 + Docker Desktop** for local runs. Treat **local ceilings** as workload-valid but **network-optimistic** relative to multi-node production. For numbers you publish as “real WAN-ish,” plan **multi-host or cloud** runs where latency comes from the actual topology (documented in the run manifest and README when you update them).
+
 ```powershell
 git clone --recurse-submodules https://github.com/brainy-bots/arcane-scaling-benchmarks.git
 cd arcane-scaling-benchmarks
@@ -112,4 +116,4 @@ Compare ceiling lines from the script output or CSVs with **arcane-demos** `docs
 
 ## AWS
 
-Optional flow: **`scripts/cloud/Run-Benchmark-Aws.ps1`** (provision → SSM bootstrap → `Run-Benchmark.ps1` → stage via S3 → **download to `results/runs/<Environment>/<runId>/` locally**; **`-TerminateOnExit`** to destroy the instance). **`Setup-AwsBenchmark.ps1`** / **`Cleanup-AwsBenchmark.ps1`** split provision and teardown; **`-Environment`** selects a topology under `scripts/cloud/environments/` (default `SingleInstance`). See **`scripts/cloud/README.md`** and **`scripts/cloud/environments/README.md`**.
+Optional flow: **`scripts/cloud/Run-Benchmark-Aws.ps1`** (provision → SSM bootstrap → `Run-Benchmark.ps1` → stage via S3 → **download to `results/runs/<Environment>/<runId>/` locally**; **`-TerminateOnExit`** to destroy the instance). **`Setup-AwsBenchmark.ps1`** / **`Cleanup-AwsBenchmark.ps1`** split provision and teardown; **`-Environment`** selects a topology under `scripts/cloud/environments/` — **`SingleInstance`** (one box) or **`DistributedComponents`** (Redis, SpacetimeDB, and driver on **three** instances with **private VPC** networking between them). See **`scripts/cloud/README.md`** and **`scripts/cloud/environments/DistributedComponents/README.md`**.

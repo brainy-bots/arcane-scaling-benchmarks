@@ -12,8 +12,8 @@
   local `Run-Benchmark.ps1` run — so the person running the script has artifacts on disk when the command finishes.
   Use **-SkipLocalResultsDownload** only if you intentionally want bucket-only artifacts.
 
-  **Fail-fast:** After cloning the repo, the SSM script runs **`scripts/start-benchmark-deps.sh`** (the same
-  script you can run locally) so Redis + SpacetimeDB in Docker match between laptop and EC2.
+  **SingleInstance:** After clone, SSM runs **`scripts/start-benchmark-deps.sh`** so Redis + SpacetimeDB match local Docker.
+  **DistributedComponents:** Redis and SpacetimeDB run on **separate** instances; the driver uses **private IPs** (no `start-benchmark-deps.sh` on the driver).
 
   Requires: AWS CLI; instance profile with SSM + S3 PutObject on -ArtifactBucket; your IAM user/role needs
   **s3:GetObject** (and list) on that bucket for the post-run download.
@@ -74,6 +74,7 @@ foreach ($leaf in @('Setup.ps1', 'RemoteBenchmark.ps1', 'Cleanup.ps1')) {
   if (-not (Test-Path -LiteralPath $p)) { throw "Missing environment script: $p" }
   . $p
 }
+. (Join-Path $PSScriptRoot 'Common/AwsBenchmarkEnvironmentRegistry.ps1')
 
 Assert-AwsCli
 Assert-IamInstanceProfile -name $IamInstanceProfileName
@@ -91,23 +92,19 @@ if (-not [string]::IsNullOrWhiteSpace($resolvedGh)) {
 $runId = Get-Date -Format 'yyyyMMdd_HHmmss'
 $state = $null
 
+$initParams = @{
+  Region                 = $Region
+  InstanceType           = $InstanceType
+  RootVolumeGiB          = $RootVolumeGiB
+  SubnetId               = $SubnetId
+  SecurityGroupId        = $SecurityGroupId
+  KeyName                = $KeyName
+  IamInstanceProfileName = $IamInstanceProfileName
+  RunId                  = $runId
+}
+
 try {
-  switch ($Environment) {
-    'SingleInstance' {
-      $state = Initialize-SingleInstanceAwsBenchmarkEnvironment `
-        -Region $Region `
-        -InstanceType $InstanceType `
-        -RootVolumeGiB $RootVolumeGiB `
-        -SubnetId $SubnetId `
-        -SecurityGroupId $SecurityGroupId `
-        -KeyName $KeyName `
-        -IamInstanceProfileName $IamInstanceProfileName `
-        -RunId $runId
-    }
-    default {
-      throw "Environment '$Environment' is registered but not implemented in Run-Benchmark-Aws.ps1."
-    }
-  }
+  $state = Invoke-BenchmarkAwsEnvironmentInitialize -Environment $Environment -Parameters $initParams
 
   $state | Add-Member -NotePropertyName RunId -NotePropertyValue $runId -Force
   $state | Add-Member -NotePropertyName ArtifactBucket -NotePropertyValue $ArtifactBucket -Force
@@ -118,22 +115,17 @@ try {
     Write-Host "State saved: $StateOutPath" -ForegroundColor DarkGray
   }
 
-  switch ($Environment) {
-    'SingleInstance' {
-      $result = Invoke-SingleInstanceAwsRemoteBenchmark `
-        -State $state `
-        -RunId $runId `
-        -ArtifactBucket $ArtifactBucket `
-        -ArtifactPrefix $ArtifactPrefix `
-        -RepoUrl $RepoUrl `
-        -Branch $Branch `
-        -BenchmarkPwshArgs $BenchmarkPwshArgs `
-        -GithubTokenB64 $githubTokenB64
-    }
-    default {
-      throw "Environment '$Environment' has no remote benchmark step in Run-Benchmark-Aws.ps1."
-    }
+  $remoteParams = @{
+    State                = $state
+    RunId                = $runId
+    ArtifactBucket       = $ArtifactBucket
+    ArtifactPrefix       = $ArtifactPrefix
+    RepoUrl              = $RepoUrl
+    Branch               = $Branch
+    BenchmarkPwshArgs    = $BenchmarkPwshArgs
+    GithubTokenB64       = $githubTokenB64
   }
+  $result = Invoke-BenchmarkAwsEnvironmentRemoteBenchmark -Environment $Environment -Parameters $remoteParams
 
   if ($result.Invocation.Status -ne 'Success') { exit 1 }
 
@@ -160,9 +152,6 @@ try {
 }
 finally {
   if ($TerminateOnExit -and $null -ne $state) {
-    switch ($state.Environment) {
-      'SingleInstance' { Remove-SingleInstanceAwsBenchmarkEnvironment -State $state }
-      default { Write-Warning "No cleanup registered for environment '$($state.Environment)'." }
-    }
+    Invoke-BenchmarkAwsEnvironmentRemove -Environment $state.Environment -State $state
   }
 }
