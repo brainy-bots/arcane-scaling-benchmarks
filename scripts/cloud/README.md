@@ -7,9 +7,9 @@
 | **`Run-Benchmark-Aws.ps1`** | Full run: provision → SSM (clone, deps, build, `Run-Benchmark.ps1`) → stage to S3 → **download to your machine** (default: `results/runs/<Environment>/<runId>/`) → optional terminate. |
 | **`Sync-AwsBenchmarkResultsFromS3.ps1`** | **Pull-only:** copy an existing run from S3 into `results/runs/...` when the orchestrator did not download (skipped step, crash, or old tooling). |
 | **`Setup-AwsBenchmark.ps1`** | Provision only; writes a **state JSON** for later cleanup or manual SSM. |
-| **`Cleanup-AwsBenchmark.ps1`** | Tear down using **`-StatePath`** or explicit **`-InstanceId`** / **`-Region`**. |
+| **`Cleanup-AwsBenchmark.ps1`** | Tear down using **`-StatePath`** (required for **DistributedComponents**) or **`-InstanceId`** / **`-Region`** for **SingleInstance** only. |
 
-**Topology** is selected with **`-Environment`** (default `SingleInstance`). Each value maps to `environments/<Name>/`; see [environments/README.md](environments/README.md) to add another (e.g. multi-host).
+**Topology** is selected with **`-Environment`** (default `SingleInstance`). Use **`DistributedComponents`** for Redis + SpacetimeDB on **separate** instances and the benchmark driver on a third (VPC private IPs). See [environments/README.md](environments/README.md).
 
 ## Prerequisites
 

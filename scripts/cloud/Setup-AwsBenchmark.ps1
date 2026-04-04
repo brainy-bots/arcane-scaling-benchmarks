@@ -43,28 +43,24 @@ if ($script:AwsBenchmarkKnownEnvironments -notcontains $Environment) {
 $setupPath = Join-Path $PSScriptRoot "environments\$Environment\Setup.ps1"
 if (-not (Test-Path -LiteralPath $setupPath)) { throw "Missing environment script: $setupPath" }
 . $setupPath
+. (Join-Path $PSScriptRoot 'Common/AwsBenchmarkEnvironmentRegistry.ps1')
 
 Assert-AwsCli
 Assert-IamInstanceProfile -name $IamInstanceProfileName
 
 $runId = Get-Date -Format 'yyyyMMdd_HHmmss'
 
-switch ($Environment) {
-  'SingleInstance' {
-    $state = Initialize-SingleInstanceAwsBenchmarkEnvironment `
-      -Region $Region `
-      -InstanceType $InstanceType `
-      -RootVolumeGiB $RootVolumeGiB `
-      -SubnetId $SubnetId `
-      -SecurityGroupId $SecurityGroupId `
-      -KeyName $KeyName `
-      -IamInstanceProfileName $IamInstanceProfileName `
-      -RunId $runId
-  }
-  default {
-    throw "Environment '$Environment' is registered but not implemented in Setup-AwsBenchmark.ps1."
-  }
+$initParams = @{
+  Region                 = $Region
+  InstanceType           = $InstanceType
+  RootVolumeGiB          = $RootVolumeGiB
+  SubnetId               = $SubnetId
+  SecurityGroupId        = $SecurityGroupId
+  KeyName                = $KeyName
+  IamInstanceProfileName = $IamInstanceProfileName
+  RunId                  = $runId
 }
+$state = Invoke-BenchmarkAwsEnvironmentInitialize -Environment $Environment -Parameters $initParams
 
 $state | Add-Member -NotePropertyName RunId -NotePropertyValue $runId -Force
 $state | Add-Member -NotePropertyName ArtifactBucket -NotePropertyValue $ArtifactBucket -Force

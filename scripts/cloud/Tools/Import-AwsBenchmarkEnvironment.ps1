@@ -4,5 +4,9 @@
 
 $script:AwsBenchmarkKnownEnvironments = @(
   'SingleInstance'
-  # Example future: 'DistributedComponents'
+  'DistributedComponents'
 )
+
+function Get-AwsBenchmarkKnownEnvironments {
+  return @($script:AwsBenchmarkKnownEnvironments)
+}

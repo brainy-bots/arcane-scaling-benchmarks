@@ -26,4 +26,4 @@ results/runs/<Environment>/<yyyyMMdd_HHmmss>/
 ## Overrides
 
 - Pass **`-OutDir`** to `Run-Benchmark.ps1` to use a different root (the same `spacetimedb_only/` and `arcane_plus_spacetimedb/` children are still created). **`Environment` is ignored** when `-OutDir` is set.
-- **AWS:** same path inside the cloned repo on EC2 (`results/runs/SingleInstance/<runId>/`), synced to **`s3://<bucket>/<prefix>/SingleInstance/<runId>/`**.
+- **AWS:** same path inside the cloned repo on EC2 (`results/runs/<Environment>/<runId>/`), synced to **`s3://<bucket>/<prefix>/<Environment>/<runId>/`** (e.g. **`SingleInstance`** or **`DistributedComponents`** — match **`-Environment`** when using `Sync-AwsBenchmarkResultsFromS3.ps1`).

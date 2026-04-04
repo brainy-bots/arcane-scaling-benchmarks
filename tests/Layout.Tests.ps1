@@ -10,6 +10,11 @@ Describe 'Benchmark repository layout' {
     Test-Path -LiteralPath $p | Should -Be $true
   }
 
+  It 'exposes shared benchmark harness helpers' {
+    $p = Join-Path $PSScriptRoot '..\scripts\BenchmarkHarnessHelpers.ps1'
+    Test-Path -LiteralPath $p | Should -Be $true
+  }
+
   It 'exposes optional AWS launcher' {
     $p = Join-Path $PSScriptRoot '..\scripts\cloud\Run-Benchmark-Aws.ps1'
     Test-Path -LiteralPath $p | Should -Be $true
@@ -21,10 +26,18 @@ Describe 'Benchmark repository layout' {
     Test-Path -LiteralPath (Join-Path $root 'Cleanup-AwsBenchmark.ps1') | Should -Be $true
     Test-Path -LiteralPath (Join-Path (Join-Path $root 'Tools') 'Import-AwsBenchmarkEnvironment.ps1') | Should -Be $true
     Test-Path -LiteralPath (Join-Path (Join-Path $root 'Common') 'AwsHelpers.ps1') | Should -Be $true
+    Test-Path -LiteralPath (Join-Path (Join-Path $root 'Common') 'AwsBenchmarkEnvironmentRegistry.ps1') | Should -Be $true
   }
 
   It 'exposes SingleInstance environment module' {
     $base = Join-Path (Join-Path (Join-Path $PSScriptRoot '..\scripts\cloud') 'environments') 'SingleInstance'
+    Test-Path -LiteralPath (Join-Path $base 'Setup.ps1') | Should -Be $true
+    Test-Path -LiteralPath (Join-Path $base 'RemoteBenchmark.ps1') | Should -Be $true
+    Test-Path -LiteralPath (Join-Path $base 'Cleanup.ps1') | Should -Be $true
+  }
+
+  It 'exposes DistributedComponents environment module' {
+    $base = Join-Path (Join-Path (Join-Path $PSScriptRoot '..\scripts\cloud') 'environments') 'DistributedComponents'
     Test-Path -LiteralPath (Join-Path $base 'Setup.ps1') | Should -Be $true
     Test-Path -LiteralPath (Join-Path $base 'RemoteBenchmark.ps1') | Should -Be $true
     Test-Path -LiteralPath (Join-Path $base 'Cleanup.ps1') | Should -Be $true
