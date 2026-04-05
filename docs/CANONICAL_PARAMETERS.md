@@ -46,3 +46,18 @@ When enabled, the profile is fully deterministic and reproducible:
 ## Inter-node latency and published numbers
 
 There is **no** in-repo, cross-platform Docker recipe for artificial WAN-like delay that works for the typical **Windows + Docker Desktop** developer machine. Local runs remain valid for **workload and correctness** of the harness; **published** ceilings that must reflect **real multi-host RTT** should come from **cloud or multi-machine** runs (topology described in the run manifest and README).
+
+## Multi-host Arcane (`Run-Benchmark.ps1`)
+
+| Parameter | Default | Role |
+|-----------|---------|------|
+| **ArcaneManagerHost** | `127.0.0.1` | HTTP host for `arcane-manager` (swarm `--arcane-manager`). |
+| **ArcaneManagerPort** | `8081` | Manager HTTP port. |
+| **ArcaneClusterHosts** | _(empty)_ | Per-cluster websocket host; index `i` = cluster `i`. Empty = all `127.0.0.1` (current single-machine behavior). |
+| **ArcaneClusterBasePort** | `8090` | First cluster WS port; cluster `i` uses `BasePort + i * Stride`. |
+| **ArcaneClusterPortStride** | `1` | Use **`0`** when each cluster runs on its **own** machine and every process listens on the **same** port number (e.g. 8090 on each host). |
+| **ArcaneExternalProcesses** | `$false` | If set, the script **does not** start `arcane-manager` / `arcane-cluster` locally; it only waits for TCP and runs **swarm**. Non-loopback manager or cluster hosts **require** this switch. |
+
+`MANAGER_CLUSTERS` for locally spawned processes is built as `clusterId:host:port` using the hosts/ports above. For **external** mode, start Arcane elsewhere with a matching layout; the harness still checks that manager and cluster sockets are open before driving swarm.
+
+**Config file:** the same names are allowed in `-ConfigFile` JSON (`ArcaneClusterHosts` as a JSON array of strings).

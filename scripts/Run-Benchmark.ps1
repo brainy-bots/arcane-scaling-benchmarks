@@ -8,8 +8,12 @@
   - SpacetimeDB reachable at -SpacetimeHost (default http://127.0.0.1:3000) with database -DatabaseName
     and the module already published.
   - arcane-swarm built: default path arcane_swarm/target/release/arcane-swarm(.exe).
-  - arcane-manager and arcane-cluster built when -FindArcaneCeiling is used:
+  - arcane-manager and arcane-cluster built when -FindArcaneCeiling is used (unless -ArcaneExternalProcesses):
     arcane/target/release/arcane-manager(.exe), arcane-cluster(.exe).
+
+  **Multi-host Arcane:** Use -ArcaneManagerHost / -ArcaneClusterHosts / -ArcaneManagerPort with -ArcaneExternalProcesses
+  when manager and clusters already run on other machines (same MANAGER_CLUSTERS / WS layout). For one process per machine
+  with the same websocket port everywhere, set -ArcaneClusterPortStride 0 and list distinct -ArcaneClusterHosts.
 
   This script does not build binaries, pull container images, or publish modules.
 
@@ -64,7 +68,14 @@ param(
   [string] $OutDir = '',
   [string] $SwarmExe = '',
   [string] $ArcaneManagerExe = '',
-  [string] $ArcaneClusterExe = ''
+  [string] $ArcaneClusterExe = '',
+
+  [string] $ArcaneManagerHost = '127.0.0.1',
+  [int] $ArcaneManagerPort = 8081,
+  [string[]] $ArcaneClusterHosts = @(),
+  [int] $ArcaneClusterBasePort = 8090,
+  [int] $ArcaneClusterPortStride = 1,
+  [switch] $ArcaneExternalProcesses
 )
 
 $ErrorActionPreference = 'Stop'
@@ -210,6 +221,7 @@ function Assert-SwarmBinary {
 }
 
 function Assert-ArcaneBinaries {
+  if ($ArcaneExternalProcesses) { return }
   if (-not (Test-Path -LiteralPath $ArcaneManagerExe)) {
     throw "arcane-manager not found: $ArcaneManagerExe. Build before running this script."
   }
@@ -329,6 +341,12 @@ function Build-BenchmarkReproCommandLine {
   & $ap 'SwarmExe' $SwarmExe
   & $ap 'ArcaneManagerExe' $ArcaneManagerExe
   & $ap 'ArcaneClusterExe' $ArcaneClusterExe
+  & $ap 'ArcaneManagerHost' $ArcaneManagerHost
+  & $ap 'ArcaneManagerPort' $ArcaneManagerPort
+  & $ap 'ArcaneClusterHosts' $ArcaneClusterHosts
+  & $ap 'ArcaneClusterBasePort' $ArcaneClusterBasePort
+  & $ap 'ArcaneClusterPortStride' $ArcaneClusterPortStride
+  $null = $parts.Add($(if ($ArcaneExternalProcesses) { '-ArcaneExternalProcesses' } else { '-ArcaneExternalProcesses:$false' }))
 
   return ($parts -join ' ')
 }
@@ -364,13 +382,13 @@ function Export-BenchmarkRunManifest {
   $bin = @{
     arcane_swarm = (Get-BinaryInfo -LiteralPath $SwarmExe)
   }
-  if ($FindArcaneCeiling -and ($null -ne $ArcaneClusterCounts) -and ($ArcaneClusterCounts.Count -gt 0)) {
+  if ($FindArcaneCeiling -and ($null -ne $ArcaneClusterCounts) -and ($ArcaneClusterCounts.Count -gt 0) -and (-not $ArcaneExternalProcesses)) {
     $bin.arcane_manager = Get-BinaryInfo -LiteralPath $ArcaneManagerExe
     $bin.arcane_cluster = Get-BinaryInfo -LiteralPath $ArcaneClusterExe
   }
 
   $manifest = [ordered]@{
-    schema_version       = 3
+    schema_version       = 4
     find_arcane_ceiling  = [bool]$FindArcaneCeiling
     run_started_utc  = $StartedUtc.ToString('o')
     run_finished_utc = $FinishedUtc.ToString('o')
@@ -398,6 +416,15 @@ function Export-BenchmarkRunManifest {
       database_name  = $DatabaseName
       redis_host     = $RedisHost
       redis_port     = $RedisPort
+    }
+    arcane_topology     = @{
+      external_processes              = [bool]$ArcaneExternalProcesses
+      manager_host                    = $ArcaneManagerHost
+      manager_port                    = $ArcaneManagerPort
+      cluster_hosts                   = $(if ($ArcaneClusterHosts.Count -gt 0) { @($ArcaneClusterHosts) } else { $null })
+      cluster_hosts_implicit_loopback = ($ArcaneClusterHosts.Count -eq 0)
+      cluster_base_ws_port            = $ArcaneClusterBasePort
+      cluster_port_stride             = $ArcaneClusterPortStride
     }
     swarm_client      = @{
       simulation_rates = @{
@@ -438,7 +465,7 @@ function Export-BenchmarkRunManifest {
         }
         arcane_plus_spacetimedb = @{
           backend                 = 'arcane'
-          arcane_manager_base_url = 'http://127.0.0.1:8081'
+          arcane_manager_base_url = "http://${ArcaneManagerHost}:${ArcaneManagerPort}"
           arcane_manager_cli_flag = '--arcane-manager'
         }
       }
@@ -601,70 +628,81 @@ function Run-Scenario-Arcane {
   $stdErrDir = Join-Path $ScenarioOutDir 'stderr'
   $null = New-Item -ItemType Directory -Path $stdErrDir -Force
 
-  Stop-ArcaneProcesses
-
-  $clusterBasePort = 8090
-  $managerPort = 8081
+  $managerPort = $ArcaneManagerPort
+  $clusterBasePort = $ArcaneClusterBasePort
 
   $clusterIds = @(for ($i = 0; $i -lt $NumServers; $i++) { [guid]::NewGuid().ToString() })
   $clusterPids = @()
+  $procManager = $null
 
   $managerClusters = @()
   for ($i = 0; $i -lt $NumServers; $i++) {
-    $port = $clusterBasePort + $i
-    $managerClusters += "${($clusterIds[$i])}:127.0.0.1:${port}"
+    $ch = if ($ArcaneClusterHosts.Count -eq 0) { '127.0.0.1' } else { $ArcaneClusterHosts[$i] }
+    $wsPort = $clusterBasePort + ($i * $ArcaneClusterPortStride)
+    $managerClusters += "${($clusterIds[$i])}:${ch}:${wsPort}"
   }
   $env:MANAGER_CLUSTERS = ($managerClusters -join ',')
-  $env:MANAGER_HTTP_PORT = $managerPort
+  $env:MANAGER_HTTP_PORT = $managerPort.ToString()
 
   $managerLog = Join-Path $stdErrDir "manager_${NumServers}_stdout.log"
   $managerErr = Join-Path $stdErrDir "manager_${NumServers}_stderr.log"
   if (Test-Path $managerLog) { Remove-Item $managerLog -Force }
   if (Test-Path $managerErr) { Remove-Item $managerErr -Force }
 
-  Write-Host "Arcane scenario num_servers=$NumServers" -ForegroundColor Cyan
+  Write-Host "Arcane scenario num_servers=$NumServers (manager ${ArcaneManagerHost}:${managerPort}, external=$ArcaneExternalProcesses)" -ForegroundColor Cyan
   Stop-ListenerOnPort -Port $ControlPort
 
-  $procManager = Start-Process -FilePath $ArcaneManagerExe -WorkingDirectory $ArcaneRepo -NoNewWindow -PassThru `
-    -RedirectStandardOutput $managerLog -RedirectStandardError $managerErr
-  Start-Sleep -Seconds 2
+  if (-not $ArcaneExternalProcesses) {
+    Stop-ArcaneProcesses
 
-  $env:REDIS_URL = "redis://${RedisHost}:${RedisPort}"
-  $env:SPACETIMEDB_PERSIST = '1'
-  $env:SPACETIMEDB_URI = $SpacetimeHost
-  $env:SPACETIMEDB_DATABASE = $DatabaseName
-  $env:SPACETIMEDB_PERSIST_HZ = $SpacetimePersistHz.ToString()
-  $env:SPACETIMEDB_PERSIST_BATCH_SIZE = $PersistBatchSize.ToString()
+    $procManager = Start-Process -FilePath $ArcaneManagerExe -WorkingDirectory $ArcaneRepo -NoNewWindow -PassThru `
+      -RedirectStandardOutput $managerLog -RedirectStandardError $managerErr
+    Start-Sleep -Seconds 2
 
-  for ($i = 0; $i -lt $NumServers; $i++) {
-    $env:CLUSTER_ID = $clusterIds[$i]
-    $env:CLUSTER_WS_PORT = ($clusterBasePort + $i).ToString()
-    $neighborList = $clusterIds | Where-Object { $_ -ne $clusterIds[$i] }
-    $env:NEIGHBOR_IDS = ($neighborList -join ',')
+    $env:REDIS_URL = "redis://${RedisHost}:${RedisPort}"
+    $env:SPACETIMEDB_PERSIST = '1'
+    $env:SPACETIMEDB_URI = $SpacetimeHost
+    $env:SPACETIMEDB_DATABASE = $DatabaseName
+    $env:SPACETIMEDB_PERSIST_HZ = $SpacetimePersistHz.ToString()
+    $env:SPACETIMEDB_PERSIST_BATCH_SIZE = $PersistBatchSize.ToString()
 
-    $clog = Join-Path $stdErrDir "cluster_${NumServers}_${i}_stdout.log"
-    $cerr = Join-Path $stdErrDir "cluster_${NumServers}_${i}_stderr.log"
-    if (Test-Path $clog) { Remove-Item $clog -Force }
-    if (Test-Path $cerr) { Remove-Item $cerr -Force }
+    for ($i = 0; $i -lt $NumServers; $i++) {
+      $env:CLUSTER_ID = $clusterIds[$i]
+      $wsPort = $clusterBasePort + ($i * $ArcaneClusterPortStride)
+      $env:CLUSTER_WS_PORT = $wsPort.ToString()
+      $neighborList = $clusterIds | Where-Object { $_ -ne $clusterIds[$i] }
+      $env:NEIGHBOR_IDS = ($neighborList -join ',')
 
-    $p = Start-Process -FilePath $ArcaneClusterExe -WorkingDirectory $ArcaneRepo -NoNewWindow -PassThru `
-      -RedirectStandardOutput $clog -RedirectStandardError $cerr
-    $clusterPids += $p.Id
+      $clog = Join-Path $stdErrDir "cluster_${NumServers}_${i}_stdout.log"
+      $cerr = Join-Path $stdErrDir "cluster_${NumServers}_${i}_stderr.log"
+      if (Test-Path $clog) { Remove-Item $clog -Force }
+      if (Test-Path $cerr) { Remove-Item $cerr -Force }
+
+      $p = Start-Process -FilePath $ArcaneClusterExe -WorkingDirectory $ArcaneRepo -NoNewWindow -PassThru `
+        -RedirectStandardOutput $clog -RedirectStandardError $cerr
+      $clusterPids += $p.Id
+    }
+
+    Start-Sleep -Seconds 3
+  } else {
+    Write-Host '  External Arcane: waiting for manager / clusters (no local spawn)...' -ForegroundColor DarkGray
   }
 
-  Start-Sleep -Seconds 3
-
-  if (-not (Wait-TcpOpen -TcpHost '127.0.0.1' -Port $managerPort -TimeoutSeconds 20)) {
-    throw "arcane-manager did not open port $managerPort"
+  if (-not (Wait-TcpOpen -TcpHost $ArcaneManagerHost -Port $managerPort -TimeoutSeconds 20)) {
+    throw "arcane-manager did not open port ${ArcaneManagerHost}:${managerPort}"
   }
   for ($i = 0; $i -lt $NumServers; $i++) {
-    $wsPort = $clusterBasePort + $i
-    if (-not (Wait-TcpOpen -TcpHost '127.0.0.1' -Port $wsPort -TimeoutSeconds 20)) {
-      throw "arcane-cluster[$i] did not open websocket port $wsPort"
+    $ch = if ($ArcaneClusterHosts.Count -eq 0) { '127.0.0.1' } else { $ArcaneClusterHosts[$i] }
+    $wsPort = $clusterBasePort + ($i * $ArcaneClusterPortStride)
+    if (-not (Wait-TcpOpen -TcpHost $ch -Port $wsPort -TimeoutSeconds 20)) {
+      throw "arcane-cluster[$i] did not open websocket ${ch}:${wsPort}"
     }
   }
-  Assert-ProcessAlive -ProcessIds $clusterPids -What 'cluster'
-  Assert-ProcessAlive -ProcessIds @($procManager.Id) -What 'manager'
+
+  if (-not $ArcaneExternalProcesses) {
+    Assert-ProcessAlive -ProcessIds $clusterPids -What 'cluster'
+    Assert-ProcessAlive -ProcessIds @($procManager.Id) -What 'manager'
+  }
 
   $stderr = Join-Path $stdErrDir "arcane_${NumServers}_${ControlPort}_stderr.log"
   $stdout = Join-Path $stdErrDir "arcane_${NumServers}_${ControlPort}_stdout.log"
@@ -682,7 +720,7 @@ function Run-Scenario-Arcane {
     '--duration', '0',
     '--run-forever',
     '--control-port', $ControlPort,
-    '--arcane-manager', "http://127.0.0.1:$managerPort",
+    '--arcane-manager', "http://${ArcaneManagerHost}:${managerPort}",
     '--uri', $SpacetimeHost,
     '--db', $DatabaseName
   )
@@ -736,8 +774,10 @@ function Run-Scenario-Arcane {
     Send-SwarmCommand -Port $ControlPort -Line 'QUIT'
     Safe-Kill -ProcessId $procSwarm.Id -What 'swarm'
 
-    foreach ($cid in $clusterPids) { Safe-Kill -ProcessId $cid -What 'cluster' }
-    Safe-Kill -ProcessId $procManager.Id -What 'manager'
+    if (-not $ArcaneExternalProcesses) {
+      foreach ($cid in $clusterPids) { Safe-Kill -ProcessId $cid -What 'cluster' }
+      if ($null -ne $procManager) { Safe-Kill -ProcessId $procManager.Id -What 'manager' }
+    }
   }
 
   return $ceiling
@@ -787,6 +827,9 @@ try {
   Assert-SpacetimeReachable
   Assert-SwarmBinary
   if ($FindArcaneCeiling -and ($null -ne $ArcaneClusterCounts) -and ($ArcaneClusterCounts.Count -gt 0)) {
+    Assert-ArcaneTopologyForSweep -FindArcaneCeiling $FindArcaneCeiling -ArcaneClusterCounts $ArcaneClusterCounts `
+      -ArcaneClusterHosts $ArcaneClusterHosts -ArcaneClusterPortStride $ArcaneClusterPortStride `
+      -ArcaneExternalProcesses ([bool]$ArcaneExternalProcesses) -ArcaneManagerHost $ArcaneManagerHost
     Assert-ArcaneBinaries
   }
 
@@ -816,7 +859,9 @@ try {
     -ErrorMessage $runErr `
     -StartedUtc $runStartedUtc `
     -FinishedUtc ([datetime]::UtcNow)
-  Stop-ArcaneProcesses
+  if (-not $ArcaneExternalProcesses) {
+    Stop-ArcaneProcesses
+  }
 }
 
 Write-Host "`nDone." -ForegroundColor Green

@@ -1,6 +1,56 @@
 # Shared helpers for Run-Benchmark.ps1 (dot-source from that script so Merge-ConfigFileParameters
 # can Set-Variable -Scope Script into the caller's script scope).
 
+function Test-IsLocalLoopbackHostName([string]$TargetHost) {
+  if ([string]::IsNullOrWhiteSpace($TargetHost)) { return $true }
+  $x = $TargetHost.Trim().ToLowerInvariant()
+  return ($x -eq '127.0.0.1' -or $x -eq 'localhost' -or $x -eq '::1')
+}
+
+function Assert-ArcaneTopologyForSweep {
+  param(
+    [Parameter(Mandatory)][bool]$FindArcaneCeiling,
+    $ArcaneClusterCounts,
+    [AllowEmptyCollection()][string[]]$ArcaneClusterHosts,
+    [int]$ArcaneClusterPortStride,
+    [bool]$ArcaneExternalProcesses,
+    [string]$ArcaneManagerHost
+  )
+
+  if (-not $FindArcaneCeiling) { return }
+  if ($null -eq $ArcaneClusterCounts -or $ArcaneClusterCounts.Count -eq 0) { return }
+  $maxN = ($ArcaneClusterCounts | Measure-Object -Maximum).Maximum
+  if ($maxN -lt 1) { return }
+
+  $hostCount = if ($null -eq $ArcaneClusterHosts) { 0 } else { $ArcaneClusterHosts.Count }
+  if ($hostCount -gt 0 -and $hostCount -lt $maxN) {
+    throw "ArcaneClusterHosts has $hostCount entries but max(ArcaneClusterCounts) is $maxN. Provide at least $maxN hostnames (index i = cluster i), or omit ArcaneClusterHosts for all-localhost."
+  }
+
+  if ($ArcaneClusterPortStride -eq 0 -and $maxN -gt 1 -and $hostCount -eq 0) {
+    throw "ArcaneClusterPortStride 0 targets one cluster per machine (same WS port on each host). Set ArcaneClusterHosts with $maxN distinct hosts, or use -ArcaneClusterPortStride 1 for multiple clusters on localhost."
+  }
+
+  if ($ArcaneClusterPortStride -eq 0 -and $maxN -gt 1) {
+    $slice = @(for ($i = 0; $i -lt $maxN; $i++) { [string]$ArcaneClusterHosts[$i] })
+    $unique = $slice | Select-Object -Unique
+    if ($unique.Count -ne $slice.Count) {
+      throw "ArcaneClusterPortStride 0 requires distinct ArcaneClusterHosts for indices 0..$($maxN - 1) (duplicate host would share the same websocket port)."
+    }
+  }
+
+  if (-not $ArcaneExternalProcesses) {
+    if (-not (Test-IsLocalLoopbackHostName $ArcaneManagerHost)) {
+      throw "ArcaneManagerHost '$ArcaneManagerHost' is not loopback. Use -ArcaneExternalProcesses when the manager runs on another machine (this script will not start it locally)."
+    }
+    foreach ($h in $ArcaneClusterHosts) {
+      if (-not (Test-IsLocalLoopbackHostName $h)) {
+        throw "ArcaneClusterHosts contains '$h' (non-loopback). Use -ArcaneExternalProcesses when clusters run on remote hosts."
+      }
+    }
+  }
+}
+
 function Get-SafeResultsEnvironmentSegment([string]$name) {
   if ([string]::IsNullOrWhiteSpace($name)) { return 'Local' }
   $s = $name.Trim() -replace '[<>:"/\\|?*]', '_'
@@ -53,7 +103,13 @@ function Merge-ConfigFileParameters {
     'OutDir',
     'SwarmExe',
     'ArcaneManagerExe',
-    'ArcaneClusterExe'
+    'ArcaneClusterExe',
+    'ArcaneManagerHost',
+    'ArcaneManagerPort',
+    'ArcaneClusterHosts',
+    'ArcaneClusterBasePort',
+    'ArcaneClusterPortStride',
+    'ArcaneExternalProcesses'
   )
   $supportedSet = @{}
   foreach ($k in $supported) { $supportedSet[$k] = $true }
