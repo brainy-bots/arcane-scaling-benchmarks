@@ -104,7 +104,7 @@ fi
 cd "$REMOTE_ROOT"
 git fetch origin
 if ! git checkout "$BRANCH"; then
-  git checkout master || git checkout main
+  git checkout main || git checkout master
 fi
 git pull --ff-only || git pull
 

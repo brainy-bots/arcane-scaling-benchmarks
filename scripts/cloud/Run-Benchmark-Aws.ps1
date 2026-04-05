@@ -37,7 +37,7 @@ param(
   [string]$IamInstanceProfileName,
 
   [string]$RepoUrl = 'https://github.com/brainy-bots/arcane-scaling-benchmarks.git',
-  [string]$Branch = 'master',
+  [string]$Branch = 'main',
 
   [string]$SubnetId = '',
   [string]$SecurityGroupId = '',
