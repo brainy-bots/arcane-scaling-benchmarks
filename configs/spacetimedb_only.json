@@ -1,0 +1,16 @@
+{
+  "BenchmarkMode": "SpacetimeOnly",
+  "SpacetimeModule": "benchmark-spacetimedb-full",
+  "DurationSeconds": 30,
+  "SpacetimeStep": 250,
+  "SpacetimeMaxPlayers": 2000,
+  "MaxErrRate": 0.01,
+  "MaxLatencyMs": 200,
+  "BurstEnabled": true,
+  "BurstPeriodSecs": 30,
+  "BurstCohortPercent": 20,
+  "BurstActionsPerPlayer": 10,
+  "BurstWindowMs": 500,
+  "ZoneEventPeriodSecs": 30,
+  "ZoneEventWindowMs": 500
+}

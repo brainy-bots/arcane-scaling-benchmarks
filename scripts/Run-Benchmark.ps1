@@ -8,8 +8,10 @@
   - SpacetimeDB reachable at -SpacetimeHost (default http://127.0.0.1:3000) with database -DatabaseName
     and the module already published.
   - arcane-swarm built: default path arcane_swarm/target/release/arcane-swarm(.exe).
-  - arcane-manager and arcane-cluster built when -FindArcaneCeiling is used:
-    arcane/target/release/arcane-manager(.exe), arcane-cluster(.exe).
+  - arcane-manager built when -FindArcaneCeiling is used: arcane/target/release/arcane-manager(.exe).
+  - benchmark-cluster built when -FindArcaneCeiling is used:
+    crates/benchmark-cluster/target/release/benchmark-cluster(.exe).
+    This binary includes BenchmarkSimulation (kinematic physics matching SpacetimeDB's physics_tick).
 
   This script does not build binaries, pull container images, or publish modules.
 
@@ -101,8 +103,11 @@ if ([string]::IsNullOrWhiteSpace($SwarmExe)) {
 if ([string]::IsNullOrWhiteSpace($ArcaneManagerExe)) {
   $ArcaneManagerExe = [System.IO.Path]::Combine($ArcaneRepo, 'target', 'release', "arcane-manager$suffix")
 }
+# Default to benchmark-cluster (with BenchmarkSimulation) instead of arcane-cluster (no simulation).
+# benchmark-cluster lives in crates/benchmark-cluster/ in the benchmark repo, not in the arcane submodule.
+$BenchmarkClusterRoot = [System.IO.Path]::Combine($BenchmarkRoot, 'crates', 'benchmark-cluster')
 if ([string]::IsNullOrWhiteSpace($ArcaneClusterExe)) {
-  $ArcaneClusterExe = [System.IO.Path]::Combine($ArcaneRepo, 'target', 'release', "arcane-cluster$suffix")
+  $ArcaneClusterExe = [System.IO.Path]::Combine($BenchmarkClusterRoot, 'target', 'release', "benchmark-cluster$suffix")
 }
 
 if ([string]::IsNullOrWhiteSpace($OutDir)) {
