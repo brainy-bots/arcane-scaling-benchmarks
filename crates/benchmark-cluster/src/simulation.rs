@@ -66,15 +66,24 @@ impl BenchmarkSimulation {
         )
     }
 
-    fn call_apply_damage(&self, target_id: Uuid, amount: u32) {
-        let body = format!(
-            "[{{\"__uuid__\":{}}},{}]",
-            target_id.as_u128(),
-            amount
-        );
+    fn call_apply_damage_batch(&self, targets: &[(Uuid, u32)]) {
+        if targets.is_empty() {
+            return;
+        }
+        let targets_json: String = targets
+            .iter()
+            .map(|(id, _)| format!("{{\"__uuid__\":{}}}", id.as_u128()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let amounts_json: String = targets
+            .iter()
+            .map(|(_, amount)| amount.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!("[[{}],[{}]]", targets_json, amounts_json);
         let _ = self
             .client
-            .post(&self.reducer_url("apply_damage"))
+            .post(&self.reducer_url("apply_damage_batch"))
             .header("Content-Type", "application/json")
             .body(body)
             .send();
@@ -205,24 +214,27 @@ impl ClusterSimulation for BenchmarkSimulation {
             entity.position.z = (entity.position.z + entity.velocity.z * speed_mult).clamp(WORLD_MIN, WORLD_MAX);
         }
 
-        // Collision detection — O(n^2), same as SpacetimeDB-only mode
+        // Collision detection — O(n^2), same as SpacetimeDB-only mode.
+        // Damage is batched into a single SpacetimeDB call per tick to avoid
+        // N² blocking HTTP round-trips (which would unfairly penalize Arcane mode).
         let entities: Vec<(Uuid, f64, f64)> = ctx
             .entities
             .values()
             .map(|e| (e.entity_id, e.position.x, e.position.z))
             .collect();
         let radius_sq = COLLISION_RADIUS * COLLISION_RADIUS;
+        let mut damage_batch: Vec<(Uuid, u32)> = Vec::new();
         for i in 0..entities.len() {
             for j in (i + 1)..entities.len() {
                 let dx = entities[i].1 - entities[j].1;
                 let dz = entities[i].2 - entities[j].2;
                 if dx * dx + dz * dz < radius_sq {
-                    // Call SpacetimeDB to apply damage authoritatively
-                    self.call_apply_damage(entities[i].0, COLLISION_DAMAGE);
-                    self.call_apply_damage(entities[j].0, COLLISION_DAMAGE);
+                    damage_batch.push((entities[i].0, COLLISION_DAMAGE));
+                    damage_batch.push((entities[j].0, COLLISION_DAMAGE));
                 }
             }
         }
+        self.call_apply_damage_batch(&damage_batch);
     }
 }
 
