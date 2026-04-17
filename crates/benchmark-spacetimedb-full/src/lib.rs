@@ -42,7 +42,10 @@ pub struct PlayerInput {
     pub dir_z: f64,
 }
 
-// ── Buff table (private: cluster reads, no client fanout) ───────────────────
+// ── Buff table (private: no client fanout) ──────────────────────────────────
+// Note: uses expires_at_tick (absolute) because SpacetimeDB manages expiration
+// in physics_tick. The persist-mode module uses duration_ticks (relative) because
+// the Arcane cluster manages expiration locally.
 
 #[table(accessor = active_buff)]
 pub struct ActiveBuff {

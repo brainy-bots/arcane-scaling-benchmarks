@@ -66,7 +66,7 @@ impl BenchmarkSimulation {
 
     fn call_apply_damage(&self, target_id: Uuid, amount: u32) {
         let body = format!(
-            "[[{{\"__uuid__\":{}}},{}]",
+            "[{{\"__uuid__\":{}}},{}]",
             target_id.as_u128(),
             amount
         );
@@ -80,7 +80,7 @@ impl BenchmarkSimulation {
 
     fn call_use_item(&self, owner_id: Uuid, item_type: u32) -> bool {
         let body = format!(
-            "[[{{\"__uuid__\":{}}},{}]",
+            "[{{\"__uuid__\":{}}},{}]",
             owner_id.as_u128(),
             item_type
         );
@@ -95,7 +95,7 @@ impl BenchmarkSimulation {
 
     fn call_pickup_item(&self, owner_id: Uuid, item_type: u32, quantity: u32) {
         let body = format!(
-            "[[{{\"__uuid__\":{}}},{},{}]",
+            "[{{\"__uuid__\":{}}},{},{}]",
             owner_id.as_u128(),
             item_type,
             quantity
@@ -110,7 +110,7 @@ impl BenchmarkSimulation {
 
     fn call_player_interact(&self, actor_id: Uuid, target_id: Uuid, event_type: u32) {
         let body = format!(
-            "[[{{\"__uuid__\":{}}},{{\"__uuid__\":{}}},{}]",
+            "[{{\"__uuid__\":{}}},{{\"__uuid__\":{}}},{}]",
             actor_id.as_u128(),
             target_id.as_u128(),
             event_type
