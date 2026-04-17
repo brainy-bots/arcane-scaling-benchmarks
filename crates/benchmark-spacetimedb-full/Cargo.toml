@@ -1,0 +1,12 @@
+[package]
+name = "benchmark-spacetimedb-full"
+version = "0.1.0"
+edition = "2021"
+description = "SpacetimeDB module for SpacetimeDB-only benchmark mode. Handles everything: physics simulation, player input, inventory, interactions, collision detection."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+spacetimedb = "2.0"
+log = "0.4"
