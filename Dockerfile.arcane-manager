@@ -1,0 +1,31 @@
+# Build the arcane-manager binary (HTTP join server for cluster assignment).
+#
+# Usage:
+#   docker build -f Dockerfile.arcane-manager -t arcane-manager .
+#   docker run -e MANAGER_CLUSTERS=<id:host:port,...> arcane-manager
+
+FROM rust:1.95-bookworm AS builder
+
+WORKDIR /build
+
+# Copy arcane library (submodule)
+COPY arcane/ arcane/
+
+WORKDIR /build/arcane
+RUN cargo build --release --bin arcane-manager --features manager
+
+# Runtime image
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/arcane/target/release/arcane-manager /usr/local/bin/
+
+ENV MANAGER_HTTP_PORT="8081"
+ENV MANAGER_CLUSTERS=""
+
+EXPOSE 8081
+
+CMD ["arcane-manager"]

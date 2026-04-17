@@ -1,0 +1,66 @@
+# Benchmark Docker Compose — runs the full Arcane + SpacetimeDB setup locally.
+#
+# Usage:
+#   docker compose up -d redis spacetimedb     # start deps
+#   spacetime publish arcane --yes             # publish the SpacetimeDB module
+#   docker compose up -d manager cluster1      # start Arcane services
+#   arcane-swarm --backend arcane --arcane-manager http://127.0.0.1:8081 ...
+#
+# For SpacetimeDB-only mode, only redis and spacetimedb are needed.
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  spacetimedb:
+    image: clockworklabs/spacetime:latest
+    command: start
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/database || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.arcane-manager
+    environment:
+      MANAGER_HTTP_PORT: "8081"
+      MANAGER_CLUSTERS: "${MANAGER_CLUSTERS}"
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      spacetimedb:
+        condition: service_healthy
+
+  cluster1:
+    build:
+      context: .
+      dockerfile: Dockerfile.benchmark-cluster
+    environment:
+      CLUSTER_ID: "${CLUSTER_ID_1:-550e8400-e29b-41d4-a716-446655440001}"
+      REDIS_URL: "redis://redis:6379"
+      NEIGHBOR_IDS: "${NEIGHBOR_IDS_1:-}"
+      CLUSTER_WS_PORT: "8090"
+      SPACETIMEDB_URI: "http://spacetimedb:3000"
+      SPACETIMEDB_DATABASE: "arcane"
+      SPACETIMEDB_PERSIST: "1"
+      SPACETIMEDB_PERSIST_HZ: "1"
+    ports:
+      - "127.0.0.1:8090:8090"
+    depends_on:
+      redis:
+        condition: service_healthy
+      spacetimedb:
+        condition: service_healthy
