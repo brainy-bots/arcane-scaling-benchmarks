@@ -1,0 +1,20 @@
+{
+  "BenchmarkMode": "ArcanePlusSpacetime",
+  "ArcaneClusterCount": 4,
+  "DurationSeconds": 30,
+  "ArcaneCeilingStartPlayers": 1500,
+  "ArcaneCeilingStep": 250,
+  "ArcaneCeilingMaxPlayers": 6000,
+  "PersistBatchSize": 0,
+  "MaxErrRate": 0.01,
+  "MaxLatencyMs": 200,
+  "BurstEnabled": true,
+  "BurstPeriodSecs": 30,
+  "BurstCohortPercent": 20,
+  "BurstActionsPerPlayer": 10,
+  "BurstWindowMs": 500,
+  "ZoneEventPeriodSecs": 30,
+  "ZoneEventWindowMs": 500,
+  "SpacetimeModule": "benchmark-spacetimedb-persist",
+  "PhysicsEngine": "kinematic"
+}
