@@ -222,6 +222,23 @@ pub fn apply_damage(
     Ok(())
 }
 
+/// Batch damage — cluster sends all collision damage for one tick in a single call.
+/// Each entry is (target_entity_id, damage_amount).
+#[reducer]
+pub fn apply_damage_batch(
+    ctx: &ReducerContext,
+    targets: Vec<spacetimedb::Uuid>,
+    amounts: Vec<u32>,
+) -> Result<(), String> {
+    for (target_id, amount) in targets.into_iter().zip(amounts.into_iter()) {
+        if let Some(mut h) = ctx.db.health().entity_id().find(&target_id) {
+            h.hp = h.hp.saturating_sub(amount);
+            ctx.db.health().entity_id().update(h);
+        }
+    }
+    Ok(())
+}
+
 // ── Interaction / event reducers ────────────────────────────────────────────
 
 #[reducer]
