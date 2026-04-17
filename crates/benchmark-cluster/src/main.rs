@@ -12,6 +12,11 @@
 //!   CLUSTER_WS_PORT       — optional; default 8080.
 //!   SPACETIMEDB_URI       — optional; default `http://127.0.0.1:3000`.
 //!   SPACETIMEDB_DATABASE  — optional; default `arcane`.
+//!
+//! Persistence (set by Run-Benchmark.ps1 or Docker):
+//!   SPACETIMEDB_PERSIST      — "1" or "true" to enable (default: disabled).
+//!   SPACETIMEDB_PERSIST_HZ   — persist frequency (default: 1).
+//!   SPACETIMEDB_PERSIST_BATCH_SIZE — entities per HTTP request (default: 0 = unlimited).
 
 mod simulation;
 
