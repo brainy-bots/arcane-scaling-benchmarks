@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 // ── Physics constants (MUST match benchmark-spacetimedb-full) ───────��───────
 pub const WORLD_SIZE: f64 = 5000.0;
+#[allow(dead_code)] // Documented for equivalence with SpacetimeDB physics_tick
 pub const PHYSICS_SPEED: f64 = 600.0;
+#[allow(dead_code)] // Documented for equivalence with SpacetimeDB physics_tick
 pub const PHYSICS_DT: f64 = 0.05; // 20 Hz
 pub const WORLD_MIN: f64 = 200.0;
 pub const WORLD_MAX: f64 = WORLD_SIZE - 200.0;
@@ -186,20 +188,21 @@ impl ClusterSimulation for BenchmarkSimulation {
             }
         }
 
-        // Physics: move entities based on velocity (client sends direction as velocity)
-        let step = PHYSICS_SPEED * PHYSICS_DT;
+        // Physics: move entities based on velocity.
+        // The swarm sends velocity as pre-computed displacement per tick:
+        //   vx = dir_x * MOVE_SPEED * tick_dt  (see arcane_swarm player.rs)
+        // So we add velocity directly, with buff speed multiplier applied.
+        // In SpacetimeDB-only mode, physics_tick reads raw direction and applies
+        // step = PHYSICS_SPEED * PHYSICS_DT. Here the swarm already did that,
+        // so we just multiply by speed_mult (1.0 if no buff).
         for entity in ctx.entities.values_mut() {
             let speed_mult = buffs
                 .get(&entity.entity_id)
                 .map(|b| b.speed_multiplier)
                 .unwrap_or(1.0);
 
-            // Velocity from client is direction (normalized-ish); apply speed
-            let vx = entity.velocity.x;
-            let vz = entity.velocity.z;
-            let effective_step = step * speed_mult;
-            entity.position.x = (entity.position.x + vx * effective_step).clamp(WORLD_MIN, WORLD_MAX);
-            entity.position.z = (entity.position.z + vz * effective_step).clamp(WORLD_MIN, WORLD_MAX);
+            entity.position.x = (entity.position.x + entity.velocity.x * speed_mult).clamp(WORLD_MIN, WORLD_MAX);
+            entity.position.z = (entity.position.z + entity.velocity.z * speed_mult).clamp(WORLD_MIN, WORLD_MAX);
         }
 
         // Collision detection — O(n^2), same as SpacetimeDB-only mode
@@ -239,29 +242,31 @@ mod tests {
     }
 
     #[test]
-    fn physics_moves_entity_by_velocity_times_speed_times_dt() {
+    fn physics_adds_velocity_directly_with_clamp() {
+        // Swarm sends velocity as pre-computed displacement: dir * MOVE_SPEED * tick_dt
+        // For dir_x=1.0: vx = 1.0 * 600 * 0.05 = 30.0
         let mut entities = HashMap::new();
-        entities.insert(Uuid::from_u128(1), mk_entity(1, 2500.0, 2500.0, 1.0, 0.0));
+        entities.insert(Uuid::from_u128(1), mk_entity(1, 2500.0, 2500.0, 30.0, 0.0));
 
-        let step = PHYSICS_SPEED * PHYSICS_DT; // 600 * 0.05 = 30
+        // Cluster adds velocity directly (no re-multiplication by step)
         for entity in entities.values_mut() {
-            entity.position.x = (entity.position.x + entity.velocity.x * step).clamp(WORLD_MIN, WORLD_MAX);
-            entity.position.z = (entity.position.z + entity.velocity.z * step).clamp(WORLD_MIN, WORLD_MAX);
+            entity.position.x = (entity.position.x + entity.velocity.x).clamp(WORLD_MIN, WORLD_MAX);
+            entity.position.z = (entity.position.z + entity.velocity.z).clamp(WORLD_MIN, WORLD_MAX);
         }
 
         let ent = entities.get(&Uuid::from_u128(1)).unwrap();
-        assert!((ent.position.x - 2530.0).abs() < 0.001, "x should be 2500 + 1.0*30 = 2530");
+        assert!((ent.position.x - 2530.0).abs() < 0.001, "x should be 2500 + 30 = 2530");
         assert!((ent.position.z - 2500.0).abs() < 0.001, "z unchanged");
     }
 
     #[test]
     fn physics_clamps_to_world_bounds() {
         let mut entities = HashMap::new();
-        entities.insert(Uuid::from_u128(1), mk_entity(1, WORLD_MAX - 10.0, 2500.0, 1.0, 0.0));
+        // vx = 30 (one tick displacement), position near max
+        entities.insert(Uuid::from_u128(1), mk_entity(1, WORLD_MAX - 10.0, 2500.0, 30.0, 0.0));
 
-        let step = PHYSICS_SPEED * PHYSICS_DT; // 30
         for entity in entities.values_mut() {
-            entity.position.x = (entity.position.x + entity.velocity.x * step).clamp(WORLD_MIN, WORLD_MAX);
+            entity.position.x = (entity.position.x + entity.velocity.x).clamp(WORLD_MIN, WORLD_MAX);
         }
 
         let ent = entities.get(&Uuid::from_u128(1)).unwrap();
