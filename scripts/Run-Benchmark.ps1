@@ -77,12 +77,26 @@ param(
   [string[]] $ArcaneClusterHosts = @(),
   [int] $ArcaneClusterBasePort = 8090,
   [int] $ArcaneClusterPortStride = 1,
-  [switch] $ArcaneExternalProcesses
+  [switch] $ArcaneExternalProcesses,
+  # Base port for each cluster's /stats HTTP endpoint (arcane-infra defaults to
+  # CLUSTER_WS_PORT + 1). The harness queries it per-tier to verify the server
+  # actually processed traffic; if it comes back with `entities_current = 0` the
+  # tier is marked invalid regardless of swarm-side "pass".
+  [int] $ArcaneClusterStatsBasePort = 8091,
+  # Minimum fraction of the player tier the clusters must have observed for the
+  # tier to count as valid. The swarm may be slightly ahead of the cluster's
+  # entity map at the moment we poll, so we don't require 100%.
+  [double] $ArcaneEntityObservedRatioMin = 0.5
 )
 
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'BenchmarkHarnessHelpers.ps1')
+
+# Accumulator for per-tier server-side evidence (populated by Run-Scenario-Arcane,
+# consumed by Export-BenchmarkRunManifest). Initialized at script scope so
+# callers don't have to thread it through every function boundary.
+$script:ArcaneRunEvidence = @()
 
 Merge-ConfigFileParameters -Path $ConfigFile
 
@@ -395,13 +409,31 @@ function Export-BenchmarkRunManifest {
     $bin.arcane_cluster = Get-BinaryInfo -LiteralPath $ArcaneClusterExe
   }
 
+  # Per-tier server-side evidence gathered by Run-Scenario-Arcane. If any tier
+  # came back invalid (cluster didn't see the entities the swarm claims to have
+  # spawned) the run is INVALID regardless of swarm-side pass/fail.
+  $arcaneEvidence = @(if ($null -ne $script:ArcaneRunEvidence) { $script:ArcaneRunEvidence } else { @() })
+  $invalidTiers = @($arcaneEvidence | Where-Object { -not $_.tier_valid })
+  $runValid = ($invalidTiers.Count -eq 0)
+  $validityFailures = @($invalidTiers | ForEach-Object {
+      [ordered]@{
+        scenario        = 'arcane_plus_spacetimedb'
+        num_servers     = $_.num_servers
+        players         = $_.players
+        reason          = $_.validity_reason
+      }
+    })
+
   $manifest = [ordered]@{
-    schema_version       = 4
+    schema_version       = 5
     find_arcane_ceiling  = [bool]$FindArcaneCeiling
     run_started_utc  = $StartedUtc.ToString('o')
     run_finished_utc = $FinishedUtc.ToString('o')
     run_succeeded    = $Succeeded
     run_error        = $(if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage })
+    run_valid        = $runValid
+    validity_failures = $validityFailures
+    per_tier_evidence = @($arcaneEvidence)
     harness          = @{
       script               = 'Run-Benchmark.ps1'
       benchmark_repo_root  = [string]$BenchmarkRoot
@@ -771,6 +803,59 @@ function Run-Scenario-Arcane {
       $parsed = Parse-SwarmFinal $txt
       $pass = Test-BenchmarkPass $parsed
 
+      # Server-side evidence: poll each cluster's /stats and sum entities_current.
+      # The swarm's "pass" can only be trusted if the cluster actually observed
+      # roughly as many entities as the swarm claims to have spawned — otherwise
+      # the run hit a silent plumbing failure (e.g. WS opened but PLAYER_STATE
+      # messages never parsed) and we must NOT emit a ceiling.
+      #
+      # Each cluster's stats port sits at (ws_port + 1). ws_port per cluster is
+      # $ArcaneClusterBasePort + i*$ArcaneClusterPortStride — matches the same
+      # layout used when spawning the clusters above.
+      $entitiesObserved = 0
+      $statsPollOk = $true
+      $statsDetail = @()
+      for ($i = 0; $i -lt $NumServers; $i++) {
+        $ch = if ($ArcaneClusterHosts.Count -eq 0) { '127.0.0.1' } else { $ArcaneClusterHosts[$i] }
+        $wsPort = $ArcaneClusterBasePort + ($i * $ArcaneClusterPortStride)
+        $statsPort = $wsPort + 1
+        $json = Get-ArcaneClusterStatsJson -ClusterHost $ch -ClusterStatsPort $statsPort -TimeoutSec 5
+        if ($null -eq $json) {
+          $statsPollOk = $false
+          $statsDetail += "cluster[$i] $ch`:$statsPort UNREACHABLE"
+        } else {
+          $entitiesObserved += [int]$json.entities_current
+          $statsDetail += "cluster[$i] $ch`:$statsPort entities=$($json.entities_current) msgs_ps=$($json.msgs_player_state) parse_fail=$($json.parse_failures)"
+        }
+      }
+      $required = [int][Math]::Ceiling($players * $ArcaneEntityObservedRatioMin)
+      $tierValid = $true
+      $validityReason = ''
+      if (-not $statsPollOk) {
+        $tierValid = $false
+        $validityReason = "cluster /stats poll failed: $($statsDetail -join '; ')"
+      } elseif ($entitiesObserved -lt $required) {
+        $tierValid = $false
+        $validityReason = "cluster entities_current=$entitiesObserved, required >= $required ($($ArcaneEntityObservedRatioMin * 100)% of $players). $($statsDetail -join '; ')"
+      }
+      $observedForLog = if ($statsPollOk) { $entitiesObserved } else { -1 }
+      Write-Host ("    [evidence] cluster_entities_observed={0} required>={1} valid={2}" `
+          -f $observedForLog, $required, $tierValid) -ForegroundColor DarkGray
+
+      $script:ArcaneRunEvidence += [PSCustomObject]@{
+        num_servers               = $NumServers
+        players                   = $players
+        swarm_pass                = [bool]$pass
+        cluster_entities_observed = $entitiesObserved
+        cluster_entities_required = $required
+        tier_valid                = $tierValid
+        validity_reason           = $validityReason
+      }
+      if (-not $tierValid) {
+        Write-Host ("    [invalid] tier players=$players FAILED validity: $validityReason") -ForegroundColor Yellow
+        break
+      }
+
       if ($pass) {
         $ceiling = $players
         $players += $ScenarioStepPlayers
@@ -819,12 +904,22 @@ function Invoke-BenchmarkPhase {
   $results | Export-Csv -Path $csv -NoTypeInformation
   Write-Host "Results written to: $csv" -ForegroundColor Green
 
+  $arcaneInvalid = @($script:ArcaneRunEvidence | Where-Object { -not $_.tier_valid })
+  if ($arcaneInvalid.Count -gt 0) {
+    Write-Host "`n!!! INVALID ARCANE RUN !!! $($arcaneInvalid.Count) tier(s) failed server-side evidence check." -ForegroundColor Red
+    foreach ($t in $arcaneInvalid) {
+      Write-Host ("  - num_servers=$($t.num_servers) players=$($t.players): $($t.validity_reason)") -ForegroundColor Red
+    }
+    Write-Host '  Ceiling numbers below are swarm-side only and MUST NOT be treated as a saturation measurement.' -ForegroundColor Red
+  }
+
   Write-Host "`n--- Ceiling summary ---" -ForegroundColor Cyan
   $sp = ($results | Where-Object { $_.backend -eq 'spacetimedb_only' } | Select-Object -First 1).ceiling_players
   $spLabel = if ($null -eq $sp) { 'none (no passing tier in this sweep)' } else { "$sp" }
   Write-Host "  SpacetimeDB only: ceiling = $spLabel players"
   foreach ($r in ($results | Where-Object { $_.backend -eq 'arcane_plus_spacetimedb' } | Sort-Object { $_.num_servers })) {
-    Write-Host "  Arcane + SpacetimeDB ($($r.num_servers) cluster(s)): ceiling = $($r.ceiling_players) players"
+    $suffix = if ($arcaneInvalid.Count -gt 0) { ' [INVALID — see warning above]' } else { '' }
+    Write-Host "  Arcane + SpacetimeDB ($($r.num_servers) cluster(s)): ceiling = $($r.ceiling_players) players$suffix"
   }
   Write-Host '---' -ForegroundColor Cyan
 }
