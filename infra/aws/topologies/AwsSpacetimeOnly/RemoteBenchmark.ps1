@@ -94,7 +94,7 @@ docker run --rm \
     --config "$CONFIG_PATH" \
     --spacetime-host "http://${ST_IP}:3000" \
     --environment AwsSpacetimeOnly \
-    -- -FindArcaneCeiling:$false
+    -- '-FindArcaneCeiling:$false'
 EC=$?
 
 aws s3 sync "$OUT_DIR" "$S3_DEST" --region "$AWS_REGION"
