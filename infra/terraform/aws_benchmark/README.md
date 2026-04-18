@@ -6,9 +6,22 @@ The PowerShell scripts under `infra/aws/` (`Run-Benchmark-Aws.ps1`, per-topology
 
 ## Prerequisites
 
-- Terraform **>= 1.3**
-- AWS credentials with permissions for EC2, IAM, S3, SSM
+- Terraform **>= 1.3** (cross-platform — Windows, macOS, Linux).
+- AWS credentials with permissions for EC2, IAM, S3, SSM.
 - **`.terraform.lock.hcl`** is committed for reproducible `terraform init`.
+
+### Install Terraform
+
+Pick the one that matches your OS:
+
+| OS | Install |
+|----|---------|
+| **Windows** | `winget install HashiCorp.Terraform` &nbsp;or&nbsp; `choco install terraform` |
+| **macOS** | `brew tap hashicorp/tap && brew install hashicorp/tap/terraform` |
+| **Linux (Debian/Ubuntu)** | `sudo apt-get install -y gnupg software-properties-common` &nbsp;then&nbsp; `curl -fsSL https://apt.releases.hashicorp.com/gpg \| sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \| sudo tee /etc/apt/sources.list.d/hashicorp.list && sudo apt-get update && sudo apt-get install -y terraform` |
+| **Any OS (no admin)** | Download the binary from <https://developer.hashicorp.com/terraform/install>, extract, and put `terraform` on your `PATH`. |
+
+Verify with `terraform version` — should print `Terraform v1.x`.
 
 ## Validate (no AWS resources touched)
 
