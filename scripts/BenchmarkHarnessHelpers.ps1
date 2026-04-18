@@ -114,7 +114,10 @@ function Merge-ConfigFileParameters {
     # same config file works for both the local harness and the AWS-side topology validator.
     'BenchmarkMode',
     'SpacetimeModule',
-    'PhysicsEngine'
+    'PhysicsEngine',
+    # Scalar alias for ArcaneClusterCounts. The AWS validator needs the scalar;
+    # the harness runs a sweep over ArcaneClusterCounts. Translated below.
+    'ArcaneClusterCount'
   )
   $supportedSet = @{}
   foreach ($k in $supported) { $supportedSet[$k] = $true }
@@ -124,5 +127,14 @@ function Merge-ConfigFileParameters {
       throw "Unsupported config key '$($prop.Name)' in $Path"
     }
     Set-Variable -Name $prop.Name -Value $prop.Value -Scope Script
+  }
+
+  # Translate the scalar ArcaneClusterCount (AWS validator spelling) into the
+  # ArcaneClusterCounts array the harness iterates. Only fires when the config
+  # supplied the scalar and did not already set the array.
+  $scalar = Get-Variable -Name ArcaneClusterCount -Scope Script -ErrorAction SilentlyContinue
+  $array  = Get-Variable -Name ArcaneClusterCounts -Scope Script -ErrorAction SilentlyContinue
+  if ($null -ne $scalar -and $null -ne $scalar.Value -and $null -eq $array) {
+    Set-Variable -Name 'ArcaneClusterCounts' -Value @([int]$scalar.Value) -Scope Script
   }
 }
