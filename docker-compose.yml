@@ -1,12 +1,8 @@
-# Benchmark Docker Compose — runs the full Arcane + SpacetimeDB setup locally.
+# Local benchmark stack. Every server role runs the same image with a different
+# command. Build once with `docker compose build`, then `docker compose up`.
 #
-# Usage:
-#   docker compose up -d redis spacetimedb     # start deps
-#   spacetime publish arcane --yes             # publish the SpacetimeDB module
-#   docker compose up -d manager cluster1      # start Arcane services
-#   arcane-swarm --backend arcane --arcane-manager http://127.0.0.1:8081 ...
-#
-# For SpacetimeDB-only mode, only redis and spacetimedb are needed.
+# For cloud runs the same image is pulled from GHCR — the image itself is
+# identical; only `image:` changes (see infra/aws/).
 
 services:
   redis:
@@ -21,8 +17,11 @@ services:
       retries: 10
 
   spacetimedb:
-    image: clockworklabs/spacetime:latest
-    command: start
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: arcane-benchmark:dev
+    command: ["spacetime", "start"]
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:
@@ -31,10 +30,20 @@ services:
       timeout: 3s
       retries: 30
 
+  # One-shot: publishes the benchmark WASM module into the running SpacetimeDB.
+  # Profile keeps it out of `docker compose up`; run it explicitly:
+  #   docker compose run --rm publish-module
+  publish-module:
+    image: arcane-benchmark:dev
+    depends_on:
+      spacetimedb:
+        condition: service_healthy
+    command: ["benchmark-publish-module", "--mode", "Persist", "--host", "http://spacetimedb:3000"]
+    profiles: ["setup"]
+
   manager:
-    build:
-      context: .
-      dockerfile: Dockerfile.arcane-manager
+    image: arcane-benchmark:dev
+    command: ["arcane-manager"]
     environment:
       MANAGER_HTTP_PORT: "8081"
       MANAGER_CLUSTERS: "${MANAGER_CLUSTERS}"
@@ -45,9 +54,8 @@ services:
         condition: service_healthy
 
   cluster1:
-    build:
-      context: .
-      dockerfile: Dockerfile.benchmark-cluster
+    image: arcane-benchmark:dev
+    command: ["benchmark-cluster"]
     environment:
       CLUSTER_ID: "${CLUSTER_ID_1:-550e8400-e29b-41d4-a716-446655440001}"
       REDIS_URL: "redis://redis:6379"
