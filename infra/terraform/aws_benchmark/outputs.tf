@@ -13,17 +13,18 @@ locals {
     RemoteProvisionProfile   = var.remote_provision_profile
   }
 
-  bench_state_topology = local.is_stonly ? {
-    SpacetimeInstanceId = aws_instance.stonly_spacetime[0].id
-    BenchmarkInstanceId = aws_instance.stonly_driver[0].id
-    } : {
-    RedisInstanceId     = aws_instance.arph_redis[0].id
-    SpacetimeInstanceId = aws_instance.arph_spacetime[0].id
-    ManagerInstanceId   = aws_instance.arph_manager[0].id
-    ClusterInstanceIds  = [for i in aws_instance.arph_cluster : i.id]
-    ClusterIds          = [for u in random_uuid.cluster : u.result]
-    MaxArcaneClusters   = var.arcane_cluster_count
-    BenchmarkInstanceId = aws_instance.arph_driver[0].id
+  # Per-key dispatch. Keeping the object shape constant across topologies lets
+  # Terraform unify types (each key becomes nullable-string / nullable-list).
+  # The empty-tuple indexing is guarded by try() because the inactive side
+  # references an empty aws_instance.* tuple whose [0] has no type.
+  bench_state_topology = {
+    SpacetimeInstanceId = local.is_stonly ? try(aws_instance.stonly_spacetime[0].id, null) : try(aws_instance.arph_spacetime[0].id, null)
+    BenchmarkInstanceId = local.is_stonly ? try(aws_instance.stonly_driver[0].id, null) : try(aws_instance.arph_driver[0].id, null)
+    RedisInstanceId     = local.is_arph ? try(aws_instance.arph_redis[0].id, null) : null
+    ManagerInstanceId   = local.is_arph ? try(aws_instance.arph_manager[0].id, null) : null
+    ClusterInstanceIds  = local.is_arph ? [for i in aws_instance.arph_cluster : i.id] : []
+    ClusterIds          = local.is_arph ? [for u in random_uuid.cluster : u.result] : []
+    MaxArcaneClusters   = local.is_arph ? var.arcane_cluster_count : 0
   }
 }
 
@@ -34,7 +35,7 @@ output "benchmark_state" {
 
 output "driver_instance_id" {
   description = "EC2 id of the benchmark driver (SSM target)."
-  value       = local.is_stonly ? aws_instance.stonly_driver[0].id : aws_instance.arph_driver[0].id
+  value       = local.is_stonly ? try(aws_instance.stonly_driver[0].id, null) : try(aws_instance.arph_driver[0].id, null)
 }
 
 output "security_group_id" {

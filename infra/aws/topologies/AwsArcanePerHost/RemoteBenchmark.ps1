@@ -170,11 +170,10 @@ echo "ERROR: cluster WS not listening on 8090"; docker logs arcane-bench-cluster
   }
 
   # ── 5. Driver — image + run-benchmark-sweep + aws s3 sync ─────────────────
-  # Emit each hostname as its own -ArcaneClusterHosts arg. PowerShell -File mode
-  # accumulates repeated parameter values into the [string[]] binding. Comma-
-  # joined or space-joined single-argv forms are unreliable here (PS does not
-  # auto-split a single argv) so we do the loop explicitly.
-  $pwshClusterHostsArg = ($clusterIps | ForEach-Object { "-ArcaneClusterHosts $_" }) -join ' '
+  # run-benchmark-sweep invokes pwsh with -Command, so the tail is parsed as
+  # PowerShell. Emit a PS array literal for -ArcaneClusterHosts.
+  $achInner = ($clusterIps | ForEach-Object { "'$_'" }) -join ','
+  $pwshClusterHostsArg = "-ArcaneClusterHosts $achInner"
 
   $drvTpl = @'
 #!/bin/bash
