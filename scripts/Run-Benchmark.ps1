@@ -86,7 +86,14 @@ param(
   # Minimum fraction of the player tier the clusters must have observed for the
   # tier to count as valid. The swarm may be slightly ahead of the cluster's
   # entity map at the moment we poll, so we don't require 100%.
-  [double] $ArcaneEntityObservedRatioMin = 0.5
+  [double] $ArcaneEntityObservedRatioMin = 0.5,
+  # Ramp-up tuning. At scale (1500+ players on AWS) tokio-tungstenite takes
+  # tens of seconds to open every WebSocket; if we start the measurement window
+  # before the swarm finishes connecting, the "failing" tier is really the ramp
+  # being caught mid-flight. Wait up to this many seconds for >= RampReachedRatio
+  # of players to show up at the cluster's /stats before calling RESET.
+  [int] $ArcaneRampTimeoutSeconds = 180,
+  [double] $ArcaneRampReachedRatio = 0.95
 )
 
 $ErrorActionPreference = 'Stop'
@@ -792,7 +799,36 @@ function Run-Scenario-Arcane {
     while ($players -le $ScenarioMaxPlayers) {
       Write-Host "  [Arcane+Spacetime] num_servers=$NumServers testing players=$players ..." -ForegroundColor Gray
       Send-SwarmCommand -Port $ControlPort -Line "SET_PLAYERS $players"
-      Start-Sleep -Seconds 2
+
+      # Wait for the swarm's connects to reach the cluster's /stats before we
+      # start the measurement window. Starting RESET mid-ramp produces numbers
+      # that are dominated by the cluster's still-empty minutes, not steady
+      # state. If ramp times out (cluster genuinely can't accept the connects
+      # in time), this tier is marked INVALID and the sweep stops.
+      $clusterHostsForRamp = @()
+      for ($i = 0; $i -lt $NumServers; $i++) {
+        $clusterHostsForRamp += if ($ArcaneClusterHosts.Count -eq 0) { '127.0.0.1' } else { $ArcaneClusterHosts[$i] }
+      }
+      $ramp = Wait-ArcaneClustersReachEntityCount -ClusterHosts $clusterHostsForRamp `
+        -ClusterBasePort $ArcaneClusterBasePort -ClusterPortStride $ArcaneClusterPortStride `
+        -TargetTotalEntities $players -ReachedRatioMin $ArcaneRampReachedRatio `
+        -TimeoutSeconds $ArcaneRampTimeoutSeconds -PollIntervalSeconds 2
+      Write-Host ("    [ramp] reached={0} target~{1} elapsed={2:N1}s ready={3}" `
+          -f $ramp.FinalTotal, $players, $ramp.ElapsedSec, $ramp.Ready) -ForegroundColor DarkGray
+      if (-not $ramp.Ready) {
+        Write-Host ("    [invalid] tier players=$players RAMP FAILED: $($ramp.Detail)") -ForegroundColor Yellow
+        $script:ArcaneRunEvidence += [PSCustomObject]@{
+          num_servers               = $NumServers
+          players                   = $players
+          swarm_pass                = $false
+          cluster_entities_observed = $ramp.FinalTotal
+          cluster_entities_required = [int][Math]::Ceiling($players * $ArcaneRampReachedRatio)
+          tier_valid                = $false
+          validity_reason           = "ramp timeout: $($ramp.Detail)"
+        }
+        break
+      }
+
       Send-SwarmCommand -Port $ControlPort -Line 'RESET'
       Start-Sleep -Seconds $DurationSeconds
       Send-SwarmCommand -Port $ControlPort -Line 'REPORT'

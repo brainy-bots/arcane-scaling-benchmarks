@@ -37,6 +37,69 @@ function Get-ArcaneClustersEntitiesTotal {
   return $sum
 }
 
+# Poll each cluster's /stats until the total entity count reaches a target
+# ratio of the expected player count, or until timeout. This is the "ramp
+# completed" signal before starting the measurement window — at scale
+# (1500+ players) the swarm takes 30-60s to fully connect on AWS, which is
+# longer than the tier's DurationSeconds. Starting the measurement mid-ramp
+# produces meaningless numbers.
+#
+# Uses per-host base port + (index * stride) so it matches the cluster layout
+# used elsewhere (stride 1 for local, stride 0 for AwsArcanePerHost).
+#
+# Returns a hashtable:
+#   @{ Ready = $bool; FinalTotal = int; ElapsedSec = double; Detail = string }
+function Wait-ArcaneClustersReachEntityCount {
+  param(
+    [Parameter(Mandatory)][string[]]$ClusterHosts,
+    [int]$ClusterBasePort = 8090,
+    [int]$ClusterPortStride = 1,
+    [Parameter(Mandatory)][int]$TargetTotalEntities,
+    [double]$ReachedRatioMin = 0.95,
+    [int]$TimeoutSeconds = 180,
+    [int]$PollIntervalSeconds = 2
+  )
+  $required = [int][Math]::Ceiling($TargetTotalEntities * $ReachedRatioMin)
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $started = Get-Date
+  $lastTotal = -1
+  $lastDetail = ''
+  while ((Get-Date) -lt $deadline) {
+    $total = 0
+    $pollOk = $true
+    $detail = @()
+    for ($i = 0; $i -lt $ClusterHosts.Count; $i++) {
+      $h = $ClusterHosts[$i]
+      $statsPort = $ClusterBasePort + ($i * $ClusterPortStride) + 1
+      $json = Get-ArcaneClusterStatsJson -ClusterHost $h -ClusterStatsPort $statsPort -TimeoutSec 5
+      if ($null -eq $json) {
+        $pollOk = $false
+        $detail += "cluster[$i] $h`:$statsPort UNREACHABLE"
+      } else {
+        $total += [int]$json.entities_current
+        $detail += "cluster[$i] $h`:$statsPort entities=$($json.entities_current) msgs_ps=$($json.msgs_player_state)"
+      }
+    }
+    $lastTotal = $total
+    $lastDetail = $detail -join '; '
+    if ($pollOk -and $total -ge $required) {
+      return @{
+        Ready      = $true
+        FinalTotal = $total
+        ElapsedSec = ((Get-Date) - $started).TotalSeconds
+        Detail     = $lastDetail
+      }
+    }
+    Start-Sleep -Seconds $PollIntervalSeconds
+  }
+  return @{
+    Ready      = $false
+    FinalTotal = $lastTotal
+    ElapsedSec = ((Get-Date) - $started).TotalSeconds
+    Detail     = "ramp timed out after ${TimeoutSeconds}s: reached $lastTotal / $required required (target $TargetTotalEntities). $lastDetail"
+  }
+}
+
 function Test-IsLocalLoopbackHostName([string]$TargetHost) {
   if ([string]::IsNullOrWhiteSpace($TargetHost)) { return $true }
   $x = $TargetHost.Trim().ToLowerInvariant()
