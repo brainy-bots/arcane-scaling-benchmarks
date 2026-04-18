@@ -17,7 +17,7 @@ There is **no PowerShell path** to create or destroy AWS resources. Keeping that
 
 | Script | Purpose |
 |--------|---------|
-| **`Run-Benchmark-Aws.ps1`** | Drives a benchmark run over SSM on an already-provisioned fleet. Reads the Terraform-produced state JSON via `-StatePath`. Clones the repo on the driver, builds, runs `Run-Benchmark.ps1`, uploads results to S3, and optionally syncs results locally. |
+| **`Run-Benchmark-Aws.ps1`** | Drives a benchmark run over SSM on an already-provisioned fleet. Pulls the pre-built benchmark image on every node, runs the role containers (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark-sweep`), uploads results to S3, and optionally syncs results locally. Reads state JSON via `-StatePath`, image via `-BenchmarkImage`. |
 | **`Collect-AwsBenchmarkResults.ps1`** | Checks drivers for in-flight SSM commands, then pulls every run folder from S3 into `results/runs/<Environment>/<RunId>/`. |
 | **`Sync-AwsBenchmarkResultsFromS3.ps1`** | Pulls a single `-RunId` (or `-S3Uri`) from S3 into `results/runs/...`. |
 
@@ -50,7 +50,8 @@ terraform -chdir=infra/terraform/aws_benchmark output -json benchmark_state |
 # 4. Run the benchmark
 pwsh ./infra/aws/Run-Benchmark-Aws.ps1 `
   -StatePath .\.benchmark-aws-terraform.json `
-  -ConfigFile .\configs\<your-config>.psd1
+  -ConfigFile .\configs\<your-config>.json `
+  -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:v0.1.0
 
 # 5. Collect results (optional; Run-Benchmark-Aws.ps1 syncs by default)
 pwsh ./infra/aws/Collect-AwsBenchmarkResults.ps1
@@ -67,7 +68,7 @@ terraform destroy
 - **Terraform** — needed for the provision and destroy steps. See [module install instructions](../terraform/aws_benchmark/README.md#install-terraform) (Windows / macOS / Linux).
 - **AWS CLI** configured so `aws sts get-caller-identity` succeeds.
 - Your identity needs `s3:GetObject` (and usually `s3:ListBucket`) on the artifact bucket to download results unless you use `-SkipLocalResultsDownload`.
-- Submodules in this repo point at public GitHub URLs; a token is only needed for private forks (`ARCANE_BENCHMARK_GITHUB_TOKEN` or `-GithubToken`).
+- A **pre-built benchmark image** on a public registry. The CI workflow `docker-publish.yml` builds `ghcr.io/<org>/arcane-benchmark:<tag>` on every `v*` tag. Pass the full reference via `-BenchmarkImage` (or set `ARCANE_BENCHMARK_IMAGE`). Nothing is compiled on EC2.
 
 ## Adding a topology
 
