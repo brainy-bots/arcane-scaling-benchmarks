@@ -20,9 +20,17 @@ Thumbs.db
 results/runs/
 
 # AWS launcher local state
-scripts/cloud/.benchmark-aws-state*.json
-scripts/cloud/aws_runs_*/
+.benchmark-aws-terraform.json
+infra/aws/.benchmark-aws-state*.json
+infra/aws/aws_runs_*/
+infra/aws/bench-*.json
 results/last-ssm-invoke.json
+
+# Terraform state (module lock file .terraform.lock.hcl is committed)
+infra/terraform/**/.terraform/
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.*
+infra/terraform/**/terraform.tfvars
 
 # Pester / test output
 testResults.xml

@@ -4,21 +4,23 @@
 
 .DESCRIPTION
   Use when the orchestrator did not download results (e.g. -SkipLocalResultsDownload, crash after upload,
-  or an older Run-Benchmark-Aws.ps1). Same layout as the automatic post-run sync:
+  or any run that synced to the same S3 layout). Same layout as the automatic post-run sync:
   spacetimedb_only/, arcane_plus_spacetimedb/, CSVs, stderr/.
 
   Requires: AWS CLI; IAM with s3:GetObject and s3:ListBucket on the prefix.
 
   Specify either **-S3Uri** (full prefix, trailing slash recommended) or **-ArtifactBucket** + **-RunId**
-  with optional -ArtifactPrefix and -Environment (same defaults as Run-Benchmark-Aws.ps1). If the S3 path uses a
-  non-default environment segment, pass **-Environment** so the default local path matches (or use **-LocalResultsDir**).
+  with optional -ArtifactPrefix and -Environment (same defaults as setup/run scripts). **-Environment** must be a
+  current topology name (**AwsSpacetimeOnly** or **AwsArcanePerHost**) when used for the default
+  local path under **results/runs/**. For older S3 prefixes (legacy folder names), pass **-LocalResultsDir** so the
+  download target is explicit.
 #>
 param(
   [string]$S3Uri = '',
 
   [string]$ArtifactBucket = '',
   [string]$ArtifactPrefix = 'benchmark-aws',
-  [string]$Environment = 'SingleInstance',
+  [string]$Environment = 'AwsSpacetimeOnly',
   # Last path segment of the S3 prefix when using -S3Uri alone (defaults extracted from -S3Uri when possible).
   [string]$RunId = '',
 
@@ -28,8 +30,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'Common/AwsHelpers.ps1')
+. (Join-Path $PSScriptRoot 'lib/Import-AwsBenchmarkEnvironment.ps1')
+. (Join-Path $PSScriptRoot 'lib/AwsHelpers.ps1')
 Assert-AwsCli
+
+$envSeg = $Environment.Trim().Trim('/')
+if ($script:AwsBenchmarkKnownEnvironments -notcontains $envSeg) {
+  throw "Unknown -Environment '$envSeg'. Known: $($script:AwsBenchmarkKnownEnvironments -join ', '). For legacy S3 path segments, pass -LocalResultsDir with the full local folder path."
+}
 
 $source = $S3Uri.Trim()
 $runIdForPath = $RunId.Trim()
@@ -39,7 +47,6 @@ if ([string]::IsNullOrWhiteSpace($source)) {
     throw 'Provide -S3Uri (full s3://.../prefix/) or both -ArtifactBucket and -RunId.'
   }
   $prefix = $ArtifactPrefix.Trim().Trim('/')
-  $envSeg = $Environment.Trim().Trim('/')
   $rid = $runIdForPath.Trim('/')
   $source = "s3://$bucket/$prefix/$envSeg/$rid/"
 } elseif ([string]::IsNullOrWhiteSpace($runIdForPath)) {
@@ -60,7 +67,7 @@ if ($source -notmatch '/$') {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $dest = $LocalResultsDir.Trim()
 if ([string]::IsNullOrWhiteSpace($dest)) {
-  $dest = Join-Path $repoRoot (Join-Path 'results' (Join-Path 'runs' (Join-Path $Environment $runIdForPath)))
+  $dest = Join-Path $repoRoot (Join-Path 'results' (Join-Path 'runs' (Join-Path $envSeg $runIdForPath)))
 } elseif ([System.IO.Path]::IsPathRooted($dest)) {
   $dest = [System.IO.Path]::GetFullPath($dest)
 } else {

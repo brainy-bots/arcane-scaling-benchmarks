@@ -6,7 +6,7 @@ This page describes how benchmark scripts are separated after modularization.
 flowchart LR
   subgraph Entry["Entry scripts"]
     V2["scripts/benchmark/Run-Benchmark-V2.ps1"]
-    Cloud["scripts/cloud/Run-Benchmark-V2-Aws.ps1"]
+    Cloud["infra/aws/Run-Benchmark-Aws.ps1"]
   end
 
   subgraph Shared["Shared modules (scripts/common)"]
@@ -39,7 +39,7 @@ flowchart LR
 - `BenchmarkScenario`: cluster manager topology/env-line generation helpers.
 - `BenchmarkRuntime`: runtime utilities for docker stats and log container naming.
 - `Run-Benchmark-V2.ps1`: orchestration flow and loop control for local benchmark runs.
-- `Run-Benchmark-V2-Aws.ps1`: cloud-oriented orchestration variant.
+- `infra/aws/Run-Benchmark-Aws.ps1`: cloud-oriented orchestration variant. Provisioning and teardown are not in PowerShell — see `infra/terraform/aws_benchmark/`.
 
 ## Test coverage map
 
