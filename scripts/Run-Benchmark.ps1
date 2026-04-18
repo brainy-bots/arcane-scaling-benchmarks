@@ -226,6 +226,7 @@ function Assert-ArcaneBinaries {
 function Get-GitHeadOptional([string]$RepoRoot) {
   $git = Get-Command git -ErrorAction SilentlyContinue
   if (-not $git) { return $null }
+  if ([string]::IsNullOrWhiteSpace($RepoRoot) -or -not (Test-Path -LiteralPath $RepoRoot)) { return $null }
   Push-Location $RepoRoot
   try {
     $h = & git rev-parse HEAD 2>$null
