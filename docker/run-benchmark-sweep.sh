@@ -47,4 +47,7 @@ pwsh -NoProfile -File /opt/benchmark/scripts/Run-Benchmark.ps1 \
   -SpacetimeHost "$SPACETIME_HOST" \
   -Environment "$ENVIRONMENT" \
   -OutDir "$OUT_DIR" \
+  -SwarmExe /usr/local/bin/arcane-swarm \
+  -ArcaneManagerExe /usr/local/bin/arcane-manager \
+  -ArcaneClusterExe /usr/local/bin/benchmark-cluster \
   "${EXTRA[@]:-}"
