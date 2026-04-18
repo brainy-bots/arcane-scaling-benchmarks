@@ -116,7 +116,7 @@ Compare ceiling lines from the script output or CSVs with **arcane-demos** `docs
 
 ## AWS
 
-Optional flow (three phases, split by tool so every AWS resource is declarative):
+Optional flow (three phases, split by tool so every AWS resource is declarative). **Requires Terraform (>= 1.3)** — see [module install instructions](infra/terraform/aws_benchmark/README.md#install-terraform) (works on Windows, macOS, Linux).
 
 1. **Provision** — `terraform apply` in **`infra/terraform/aws_benchmark/`** creates the EC2 fleet, security group, S3 artifact bucket, IAM role, and instance profile. Pick the topology with **`-var=topology=AwsSpacetimeOnly`** (SpacetimeDB + driver) or **`-var=topology=AwsArcanePerHost`** (Redis + SpacetimeDB + manager + N clusters + driver). Export state for the run phase: `terraform output -json benchmark_state > .benchmark-aws-terraform.json`.
 2. **Run** — **`infra/aws/Run-Benchmark-Aws.ps1 -StatePath .benchmark-aws-terraform.json -ConfigFile <...>`** invokes SSM on the driver to clone the repo, build, run the benchmark, and upload artifacts to S3. **`infra/aws/Collect-AwsBenchmarkResults.ps1`** / **`Sync-AwsBenchmarkResultsFromS3.ps1`** pull results into **`results/runs/<Environment>/<runId>/`** locally.

@@ -64,7 +64,8 @@ terraform destroy
 
 ## Prerequisites
 
-- AWS CLI configured so `aws sts get-caller-identity` succeeds.
+- **Terraform** — needed for the provision and destroy steps. See [module install instructions](../terraform/aws_benchmark/README.md#install-terraform) (Windows / macOS / Linux).
+- **AWS CLI** configured so `aws sts get-caller-identity` succeeds.
 - Your identity needs `s3:GetObject` (and usually `s3:ListBucket`) on the artifact bucket to download results unless you use `-SkipLocalResultsDownload`.
 - Submodules in this repo point at public GitHub URLs; a token is only needed for private forks (`ARCANE_BENCHMARK_GITHUB_TOKEN` or `-GithubToken`).
 
