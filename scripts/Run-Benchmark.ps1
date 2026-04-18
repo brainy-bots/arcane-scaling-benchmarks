@@ -789,10 +789,11 @@ function Invoke-BenchmarkPhase {
 
 # --- Preconditions only (no builds / publish / image pulls) ---
 try {
-  Assert-RedisReachable
   Assert-SpacetimeReachable
   Assert-SwarmBinary
   if ($FindArcaneCeiling -and ($null -ne $ArcaneClusterCounts) -and ($ArcaneClusterCounts.Count -gt 0)) {
+    # Redis is only used by the Arcane phase (cluster replication). SpacetimeOnly runs never touch it.
+    Assert-RedisReachable
     Assert-ArcaneBinaries
   }
 
