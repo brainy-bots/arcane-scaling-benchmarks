@@ -95,7 +95,9 @@ function Get-ExeSuffix {
 
 $suffix = Get-ExeSuffix
 $SwarmWorkspaceRoot = [System.IO.Path]::Combine($BenchmarkRoot, 'arcane_swarm')
+if (-not (Test-Path -LiteralPath $SwarmWorkspaceRoot)) { $SwarmWorkspaceRoot = [string]$BenchmarkRoot }
 $ArcaneRepo = [System.IO.Path]::Combine($BenchmarkRoot, 'arcane')
+if (-not (Test-Path -LiteralPath $ArcaneRepo)) { $ArcaneRepo = [string]$BenchmarkRoot }
 
 if ([string]::IsNullOrWhiteSpace($SwarmExe)) {
   $SwarmExe = [System.IO.Path]::Combine($SwarmWorkspaceRoot, 'target', 'release', "arcane-swarm$suffix")
