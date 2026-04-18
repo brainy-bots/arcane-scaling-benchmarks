@@ -1,6 +1,42 @@
 # Shared helpers for Run-Benchmark.ps1 (dot-source from that script so Merge-ConfigFileParameters
 # can Set-Variable -Scope Script into the caller's script scope).
 
+# Poll one cluster's /stats endpoint exposed by arcane-infra (CLUSTER_STATS_PORT,
+# default CLUSTER_WS_PORT + 1). Returns the parsed JSON object or $null on any
+# failure. Intentionally forgiving — callers decide whether a null result is fatal.
+function Get-ArcaneClusterStatsJson {
+  param(
+    [Parameter(Mandatory)][string]$ClusterHost,
+    [int]$ClusterStatsPort = 8091,
+    [int]$TimeoutSec = 5
+  )
+  try {
+    $resp = Invoke-WebRequest -Uri ("http://{0}:{1}/stats" -f $ClusterHost, $ClusterStatsPort) `
+      -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+    return ($resp.Content | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
+# Sum of entities observed across all provided cluster hosts, using the /stats
+# endpoint. Returns $null when any cluster failed to respond — don't treat a
+# failed poll as "0 entities", since that's also invalid.
+function Get-ArcaneClustersEntitiesTotal {
+  param(
+    [Parameter(Mandatory)][string[]]$ClusterHosts,
+    [int]$ClusterStatsPort = 8091,
+    [int]$TimeoutSec = 5
+  )
+  $sum = 0
+  foreach ($h in $ClusterHosts) {
+    $s = Get-ArcaneClusterStatsJson -ClusterHost $h -ClusterStatsPort $ClusterStatsPort -TimeoutSec $TimeoutSec
+    if ($null -eq $s) { return $null }
+    $sum += [int]$s.entities_current
+  }
+  return $sum
+}
+
 function Test-IsLocalLoopbackHostName([string]$TargetHost) {
   if ([string]::IsNullOrWhiteSpace($TargetHost)) { return $true }
   $x = $TargetHost.Trim().ToLowerInvariant()
