@@ -244,20 +244,79 @@ exit $EC
   $drvScript = $drvScript -replace "`r`n", "`n"
 
   Write-Host 'Sending driver SSM run command...' -ForegroundColor Cyan
-  $cmdId = Send-SsmRunShellScript -Region $Region -InstanceId $benchId -ScriptBody $drvScript `
-    -Comment "Arcane arph driver benchmark $RunId" -TimeoutSeconds $SsmDriverBenchmarkTimeoutSeconds
+  $inv = $null
+  try {
+    $cmdId = Send-SsmRunShellScript -Region $Region -InstanceId $benchId -ScriptBody $drvScript `
+      -Comment "Arcane arph driver benchmark $RunId" -TimeoutSeconds $SsmDriverBenchmarkTimeoutSeconds
 
-  $inv = Wait-SsmCommandInvocation -Region $Region -InstanceId $benchId -CommandId $cmdId -Label 'Driver benchmark' -PollSeconds 10
-  Write-Host '--- stdout (tail) ---' -ForegroundColor DarkGray
-  ($inv.StandardOutputContent -split "`n" | Select-Object -Last 80) -join "`n"
-  Write-Host '--- stderr (tail) ---' -ForegroundColor DarkGray
-  ($inv.StandardErrorContent -split "`n" | Select-Object -Last 40) -join "`n"
+    $inv = Wait-SsmCommandInvocation -Region $Region -InstanceId $benchId -CommandId $cmdId -Label 'Driver benchmark' -PollSeconds 10
+    Write-Host '--- stdout (tail) ---' -ForegroundColor DarkGray
+    ($inv.StandardOutputContent -split "`n" | Select-Object -Last 80) -join "`n"
+    Write-Host '--- stderr (tail) ---' -ForegroundColor DarkGray
+    ($inv.StandardErrorContent -split "`n" | Select-Object -Last 40) -join "`n"
 
-  Write-Host "Staged to S3: $s3Dest" -ForegroundColor Green
+    Write-Host "Staged to S3: $s3Dest" -ForegroundColor Green
+  } finally {
+    # Always capture per-node container logs so we can diagnose failures like
+    # "swarm WS closed mid-sweep" where the driver's CSV says nothing useful.
+    $diagRoot = "s3://$ArtifactBucket/$ArtifactPrefix/$envSeg/$RunId/diag"
+    Write-Host "Capturing node logs to $diagRoot ..." -ForegroundColor Cyan
+
+    $nodes = @(
+      [pscustomobject]@{ Label = 'redis';     InstanceId = $redisId }
+      [pscustomobject]@{ Label = 'spacetime'; InstanceId = $spacetimeId }
+      [pscustomobject]@{ Label = 'manager';   InstanceId = $managerId }
+    )
+    for ($i = 0; $i -lt $maxN; $i++) {
+      $nodes += [pscustomobject]@{ Label = "cluster$i"; InstanceId = $clusterInstIds[$i] }
+    }
+
+    $diagTpl = @'
+#!/bin/bash
+set -uo pipefail
+LABEL="__LABEL__"
+DIAG="/tmp/arph-diag-$LABEL"
+rm -rf "$DIAG" && mkdir -p "$DIAG"
+
+docker ps -a > "$DIAG/docker_ps.txt" 2>&1 || true
+
+for c in arcane-bench-redis arcane-bench-spacetime arcane-bench-manager arcane-bench-cluster; do
+  if docker inspect "$c" >/dev/null 2>&1; then
+    docker logs --tail 20000 --timestamps "$c" > "$DIAG/$c.log" 2>&1 || true
+    docker inspect "$c" > "$DIAG/$c.inspect.json" 2>&1 || true
+  fi
+done
+
+dmesg --ctime 2>/dev/null | tail -500 > "$DIAG/dmesg.log" 2>/dev/null || \
+  dmesg 2>/dev/null | tail -500 > "$DIAG/dmesg.log" 2>/dev/null || true
+
+aws s3 cp "$DIAG" "__DIAG_ROOT__/$LABEL/" --recursive --region "__REGION__" || exit 1
+echo "diag uploaded to __DIAG_ROOT__/$LABEL/"
+'@
+
+    foreach ($n in $nodes) {
+      try {
+        $script = $diagTpl.
+          Replace('__LABEL__',     (Escape-BashDoubleQuoted $n.Label)).
+          Replace('__DIAG_ROOT__', (Escape-BashDoubleQuoted $diagRoot)).
+          Replace('__REGION__',    (Escape-BashDoubleQuoted $Region))
+        $script = $script -replace "`r`n", "`n"
+        $dcId = Send-SsmRunShellScript -Region $Region -InstanceId $n.InstanceId -ScriptBody $script `
+          -Comment "Arcane arph diag $($n.Label) $RunId" -TimeoutSeconds 300
+        $null = Wait-SsmCommandInvocation -Region $Region -InstanceId $n.InstanceId -CommandId $dcId `
+          -Label "Diag $($n.Label)" -PollSeconds 3
+      } catch {
+        Write-Warning "Diag capture for $($n.Label) ($($n.InstanceId)) failed: $($_.Exception.Message). Continuing with remaining nodes."
+      }
+    }
+
+    Write-Host "Diagnostic logs at: $diagRoot" -ForegroundColor Green
+  }
 
   [pscustomobject]@{
     Invocation = $inv
     S3Dest     = $s3Dest
+    DiagRoot   = "s3://$ArtifactBucket/$ArtifactPrefix/$envSeg/$RunId/diag"
     RunId      = $RunId
   }
 }
