@@ -131,10 +131,12 @@ function Merge-ConfigFileParameters {
 
   # Translate the scalar ArcaneClusterCount (AWS validator spelling) into the
   # ArcaneClusterCounts array the harness iterates. Only fires when the config
-  # supplied the scalar and did not already set the array.
-  $scalar = Get-Variable -Name ArcaneClusterCount -Scope Script -ErrorAction SilentlyContinue
-  $array  = Get-Variable -Name ArcaneClusterCounts -Scope Script -ErrorAction SilentlyContinue
-  if ($null -ne $scalar -and $null -ne $scalar.Value -and $null -eq $array) {
-    Set-Variable -Name 'ArcaneClusterCounts' -Value @([int]$scalar.Value) -Scope Script
+  # explicitly supplied the scalar AND the config did NOT also supply the array.
+  # We can't use Get-Variable existence as the signal because PS defaults make
+  # both variables always present — we check whether the config itself set them.
+  $cfgHasScalar = $cfg.PSObject.Properties.Name -contains 'ArcaneClusterCount'
+  $cfgHasArray  = $cfg.PSObject.Properties.Name -contains 'ArcaneClusterCounts'
+  if ($cfgHasScalar -and -not $cfgHasArray) {
+    Set-Variable -Name 'ArcaneClusterCounts' -Value @([int]$cfg.ArcaneClusterCount) -Scope Script
   }
 }
