@@ -53,7 +53,12 @@ function Merge-ConfigFileParameters {
     'OutDir',
     'SwarmExe',
     'ArcaneManagerExe',
-    'ArcaneClusterExe'
+    'ArcaneClusterExe',
+    # Metadata keys — consumed by the AWS run validator / docs, not by Run-Benchmark.ps1. Accepted here so the
+    # same config file works for both the local harness and the AWS-side topology validator.
+    'BenchmarkMode',
+    'SpacetimeModule',
+    'PhysicsEngine'
   )
   $supportedSet = @{}
   foreach ($k in $supported) { $supportedSet[$k] = $true }
