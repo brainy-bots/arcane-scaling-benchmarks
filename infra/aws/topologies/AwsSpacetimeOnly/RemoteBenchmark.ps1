@@ -93,7 +93,8 @@ docker run --rm \
   "$IMG" run-benchmark-sweep \
     --config "$CONFIG_PATH" \
     --spacetime-host "http://${ST_IP}:3000" \
-    --environment AwsSpacetimeOnly
+    --environment AwsSpacetimeOnly \
+    -- -FindArcaneCeiling:$false
 EC=$?
 
 aws s3 sync "$OUT_DIR" "$S3_DEST" --region "$AWS_REGION"
