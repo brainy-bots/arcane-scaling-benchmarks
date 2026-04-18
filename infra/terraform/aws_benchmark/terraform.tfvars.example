@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars (not committed) and adjust.
+aws_region                 = "us-east-1"
+topology                   = "AwsSpacetimeOnly"
+instance_type              = "c7i.2xlarge"
+data_instance_type         = "t3.large"
+root_volume_gib            = 100
+artifact_prefix            = "benchmark-aws"
+remote_provision_profile   = "Full"
+# subnet_id                = ""
+# key_name                 = ""
+# arcane_cluster_count     = 2       # AwsArcanePerHost only
+# s3_bucket_force_destroy  = true    # default; keep true so destroy is reproducible

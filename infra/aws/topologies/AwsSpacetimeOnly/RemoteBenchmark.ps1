@@ -1,7 +1,7 @@
-# Start Redis + SpacetimeDB on dedicated instances, then clone/build/run Run-Benchmark.ps1 on the driver (private VPC IPs).
-# Requires: Common/AwsHelpers.ps1 dot-sourced by the caller.
+# SpacetimeDB on a dedicated instance; driver builds swarm, publishes module, runs SpacetimeOnly benchmark.
+# Requires: lib/AwsHelpers.ps1 dot-sourced by the caller.
 
-function Invoke-DistributedComponentsAwsRemoteBenchmark {
+function Invoke-AwsSpacetimeOnlyRemoteBenchmark {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory)][object]$State,
@@ -11,37 +11,28 @@ function Invoke-DistributedComponentsAwsRemoteBenchmark {
     [Parameter(Mandatory)][string]$RepoUrl,
     [Parameter(Mandatory)][string]$Branch,
     [string]$BenchmarkPwshArgs = '',
-    [string]$GithubTokenB64 = ''
+    [string]$GithubTokenB64 = '',
+    [string]$RemoteProvisionProfile = 'Full',
+    [int]$SsmDriverBenchmarkTimeoutSeconds = 28800
   )
 
-  if ($State.Environment -ne 'DistributedComponents') {
-    throw "Invoke-DistributedComponentsAwsRemoteBenchmark: state Environment must be DistributedComponents (got '$($State.Environment)')."
+  if ($State.Environment -ne 'AwsSpacetimeOnly') {
+    throw "Invoke-AwsSpacetimeOnlyRemoteBenchmark: state Environment must be AwsSpacetimeOnly (got '$($State.Environment)')."
   }
 
   $Region = $State.Region
-  $redisId = $State.RedisInstanceId
   $spacetimeId = $State.SpacetimeInstanceId
   $benchId = $State.BenchmarkInstanceId
   $remoteRoot = $State.RemoteRoot
-  $envSeg = 'DistributedComponents'
+  $envSeg = 'AwsSpacetimeOnly'
   $remoteOutDir = "$remoteRoot/results/runs/$envSeg/$RunId"
   $s3Dest = "s3://$ArtifactBucket/$ArtifactPrefix/$envSeg/$RunId/"
 
-  $redisIp = Get-Ec2PrivateIp -Region $Region -InstanceId $redisId
   $stIp = Get-Ec2PrivateIp -Region $Region -InstanceId $spacetimeId
-  Write-Host "Private IPs: Redis=$redisIp SpacetimeDB=$stIp (driver=$benchId)" -ForegroundColor DarkGray
-
-  $redisScript = @'
-set -euo pipefail
-export PATH="/usr/local/bin:$PATH"
-for i in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 5; done
-docker rm -f arcane-bench-redis 2>/dev/null || true
-docker run -d --name arcane-bench-redis -p 0.0.0.0:6379:6379 redis:7-alpine redis-server --appendonly yes
-for i in $(seq 1 90); do docker exec arcane-bench-redis redis-cli ping 2>/dev/null | grep -q PONG && exit 0; sleep 1; done
-exit 1
-'@
+  Write-Host "Private IPs: SpacetimeDB=$stIp (driver=$benchId)" -ForegroundColor DarkGray
 
   $stScript = @'
+#!/bin/bash
 set -euo pipefail
 export PATH="/usr/local/bin:$PATH"
 for i in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 5; done
@@ -53,13 +44,8 @@ for i in $(seq 1 120); do bash -c "echo >/dev/tcp/127.0.0.1/3000" 2>/dev/null &&
 exit 1
 '@
 
-  $cidR = Send-SsmRunShellScript -Region $Region -InstanceId $redisId -ScriptBody $redisScript `
-    -Comment "Arcane bench redis $RunId" -TimeoutSeconds 1200
-  $null = Wait-SsmCommandInvocation -Region $Region -InstanceId $redisId -CommandId $cidR -Label 'Redis' `
-    -PollSeconds 5 -ThrowOnFailure
-
   $cidS = Send-SsmRunShellScript -Region $Region -InstanceId $spacetimeId -ScriptBody $stScript `
-    -Comment "Arcane bench spacetime $RunId" -TimeoutSeconds 3600
+    -Comment "Arcane bench spacetime (st-only) $RunId" -TimeoutSeconds 3600
   $null = Wait-SsmCommandInvocation -Region $Region -InstanceId $spacetimeId -CommandId $cidS -Label 'SpacetimeDB' `
     -PollSeconds 5 -ThrowOnFailure
 
@@ -68,6 +54,12 @@ exit 1
     $benchB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($BenchmarkPwshArgs.Trim()))
   }
   $ghB64 = if ([string]::IsNullOrWhiteSpace($GithubTokenB64)) { '' } else { $GithubTokenB64.Trim() }
+
+  $driverCheck = @'
+echo "=== Verify reachability to SpacetimeDB over VPC ==="
+for i in $(seq 1 60); do bash -c "echo >/dev/tcp/$ST_IP/3000" 2>/dev/null && break; sleep 2; done
+bash -c "echo >/dev/tcp/$ST_IP/3000" 2>/dev/null || { echo "ERROR: cannot reach SpacetimeDB at $ST_IP:3000"; exit 1; }
+'@
 
   $remoteTpl = @'
 #!/bin/bash
@@ -81,7 +73,6 @@ export REMOTE_OUT="__OUT__"
 export S3_DEST="__S3__"
 export AWS_REGION="__REGION__"
 export BENCH_B64="__BENCH_B64__"
-export REDIS_IP="__REDIS_IP__"
 export ST_IP="__ST_IP__"
 GITHUB_TOKEN_B64="__GITHUB_TOKEN_B64__"
 
@@ -90,11 +81,7 @@ until command -v pwsh >/dev/null 2>&1 && command -v spacetime >/dev/null 2>&1; d
   sleep 10
 done
 
-echo "=== Verify reachability to Redis + SpacetimeDB over VPC ==="
-for i in $(seq 1 60); do bash -c "echo >/dev/tcp/$REDIS_IP/6379" 2>/dev/null && break; sleep 2; done
-bash -c "echo >/dev/tcp/$REDIS_IP/6379" 2>/dev/null || { echo "ERROR: cannot reach Redis at $REDIS_IP:6379"; exit 1; }
-for i in $(seq 1 60); do bash -c "echo >/dev/tcp/$ST_IP/3000" 2>/dev/null && break; sleep 2; done
-bash -c "echo >/dev/tcp/$ST_IP/3000" 2>/dev/null || { echo "ERROR: cannot reach SpacetimeDB at $ST_IP:3000"; exit 1; }
+__DRIVER_ST_CHECK__
 
 echo "=== Clone repository ==="
 mkdir -p "$(dirname "$REMOTE_ROOT")"
@@ -108,7 +95,7 @@ if ! git checkout "$BRANCH"; then
 fi
 git pull --ff-only || git pull
 
-echo "=== Toolchain + submodules + builds (no local Docker deps on driver) ==="
+echo "=== Toolchain + submodules + swarm build ==="
 apt-get update -y
 apt-get install -y binaryen pkg-config libssl-dev build-essential || true
 if ! command -v rustc >/dev/null 2>&1; then
@@ -126,8 +113,6 @@ fi
 git submodule update --init --recursive
 
 (cd arcane_swarm && cargo build -p arcane-swarm --bin arcane-swarm --release)
-(cd arcane && cargo build -p arcane-infra --bin arcane-manager --features manager --release)
-(cd arcane && cargo build -p arcane-infra --bin arcane-cluster --features cluster-ws --release)
 
 ST_URL="http://${ST_IP}:3000"
 (cd spacetimedb_demo/spacetimedb && spacetime build && spacetime publish arcane --yes --anonymous -s "$ST_URL")
@@ -136,9 +121,9 @@ mkdir -p "$REMOTE_OUT"
 set +e
 if [ -n "$BENCH_B64" ]; then
   EXTRA=$(printf '%s' "$BENCH_B64" | base64 -d)
-  pwsh -NoProfile -Command "& \"${REMOTE_ROOT}/scripts/Run-Benchmark.ps1\" -OutDir \"${REMOTE_OUT}\" -RedisHost \"${REDIS_IP}\" -RedisPort 6379 -SpacetimeHost \"${ST_URL}\" -Environment DistributedComponents ${EXTRA}"
+  pwsh -NoProfile -Command "& \"${REMOTE_ROOT}/scripts/Run-Benchmark.ps1\" -OutDir \"${REMOTE_OUT}\" -SpacetimeHost \"${ST_URL}\" -Environment AwsSpacetimeOnly -BenchmarkMode SpacetimeOnly ${EXTRA}"
 else
-  pwsh -NoProfile -Command "& \"${REMOTE_ROOT}/scripts/Run-Benchmark.ps1\" -OutDir \"${REMOTE_OUT}\" -RedisHost \"${REDIS_IP}\" -RedisPort 6379 -SpacetimeHost \"${ST_URL}\" -Environment DistributedComponents"
+  pwsh -NoProfile -Command "& \"${REMOTE_ROOT}/scripts/Run-Benchmark.ps1\" -OutDir \"${REMOTE_OUT}\" -SpacetimeHost \"${ST_URL}\" -Environment AwsSpacetimeOnly -BenchmarkMode SpacetimeOnly"
 fi
 EC=$?
 set -e
@@ -156,14 +141,14 @@ exit $EC
     Replace('__S3__', (Escape-BashDoubleQuoted $s3Dest)).
     Replace('__REGION__', (Escape-BashDoubleQuoted $Region)).
     Replace('__BENCH_B64__', $benchB64).
-    Replace('__REDIS_IP__', (Escape-BashDoubleQuoted $redisIp)).
+    Replace('__DRIVER_ST_CHECK__', $driverCheck.TrimEnd()).
     Replace('__ST_IP__', (Escape-BashDoubleQuoted $stIp)).
     Replace('__GITHUB_TOKEN_B64__', $ghB64)
   $remoteBash = $remoteBash -replace "`r`n", "`n"
 
   Write-Host 'Sending driver SSM run command (long)...' -ForegroundColor Cyan
   $cmdId = Send-SsmRunShellScript -Region $Region -InstanceId $benchId -ScriptBody $remoteBash `
-    -Comment "Arcane distributed benchmark $RunId" -TimeoutSeconds 28800
+    -Comment "Arcane AWS AwsSpacetimeOnly benchmark $RunId" -TimeoutSeconds $SsmDriverBenchmarkTimeoutSeconds
 
   $inv = Wait-SsmCommandInvocation -Region $Region -InstanceId $benchId -CommandId $cmdId -Label 'Driver SSM' -PollSeconds 10
   Write-Host '--- stdout (tail) ---' -ForegroundColor DarkGray

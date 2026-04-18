@@ -1,5 +1,5 @@
 BeforeAll {
-  $h = Join-Path $PSScriptRoot '..\scripts\cloud\Common\AwsHelpers.ps1'
+  $h = Join-Path $PSScriptRoot '..\infra\aws\lib\AwsHelpers.ps1'
   . $h
 }
 
