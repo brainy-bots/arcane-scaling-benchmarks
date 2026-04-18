@@ -74,7 +74,7 @@ resource "aws_instance" "arph_manager" {
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [aws_security_group.bench.id]
   iam_instance_profile        = local.iam_instance_profile_name
-  user_data                   = file("${path.module}/user_data/minimal_aws.sh")
+  user_data                   = file("${path.module}/user_data/docker_only.sh")
   user_data_replace_on_change = true
 
   root_block_device {
@@ -106,7 +106,7 @@ resource "aws_instance" "arph_cluster" {
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [aws_security_group.bench.id]
   iam_instance_profile        = local.iam_instance_profile_name
-  user_data                   = file("${path.module}/user_data/minimal_aws.sh")
+  user_data                   = file("${path.module}/user_data/docker_only.sh")
   user_data_replace_on_change = true
 
   root_block_device {
