@@ -3,6 +3,7 @@ name = "benchmark-spacetimedb-full"
 version = "0.1.0"
 edition = "2021"
 description = "SpacetimeDB module for SpacetimeDB-only benchmark mode. Handles everything: physics simulation, player input, inventory, interactions, collision detection."
+license = "AGPL-3.0-only"
 
 [lib]
 crate-type = ["cdylib"]

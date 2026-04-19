@@ -3,6 +3,7 @@ name = "benchmark-cluster"
 version = "0.1.0"
 edition = "2021"
 description = "Arcane cluster binary with benchmark simulation. Implements ClusterSimulation with kinematic physics matching SpacetimeDB's physics_tick."
+license = "AGPL-3.0-only"
 
 [[bin]]
 name = "benchmark-cluster"

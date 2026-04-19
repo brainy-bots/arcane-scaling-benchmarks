@@ -130,4 +130,8 @@ Invoke-Pester -Path ./tests -CI
 
 ## License
 
-See the [Arcane Engine license](https://github.com/brainy-bots/arcane/blob/main/LICENSE).
+arcane-scaling-benchmarks is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0). See [LICENSE](LICENSE) for the full text. The Arcane engine and swarm driver this repository benchmarks are under the same license; see the [arcane](https://github.com/brainy-bots/arcane) and [arcane_swarm](https://github.com/brainy-bots/arcane_swarm) repositories.
+
+If you want to ship proprietary/closed-source software that links any of these, contact the copyright holder for a commercial license.
+
+For licensing inquiries: martin.mba@gmail.com
