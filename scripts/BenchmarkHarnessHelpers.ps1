@@ -113,28 +113,28 @@ function Invoke-SpacetimeDbEntityCountQuery {
     [int]$TimeoutSec = 5
   )
   $uri = ('{0}/v1/database/{1}/sql' -f $SpacetimeHost.TrimEnd('/'), $Database)
-  $body = "SELECT COUNT(*) FROM $Table"
+  # SpacetimeDB's SQL engine rejects aggregate expressions without a column alias
+  # ("Aggregate expressions must have column aliases"), so `AS n` is required.
+  $body = "SELECT COUNT(*) AS n FROM $Table"
   try {
     $resp = Invoke-WebRequest -Uri $uri -Method Post -Body $body -ContentType 'text/plain' `
       -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
-    # Try the structured shape first: array with .rows = [[N]].
+    # Only accept the structured SpacetimeDB SQL result shape: array with .rows = [[N]].
+    # Any other shape (including error bodies that happen to contain integers) returns
+    # $null so the caller keeps polling instead of accepting a bogus count.
     $parsed = $null
-    try { $parsed = $resp.Content | ConvertFrom-Json -ErrorAction Stop } catch {}
-    if ($parsed) {
-      foreach ($entry in @($parsed)) {
-        if ($null -ne $entry.rows) {
-          foreach ($r in @($entry.rows)) {
-            $vals = @($r)
-            if ($vals.Count -gt 0) {
-              $n = 0L
-              if ([int64]::TryParse([string]$vals[0], [ref]$n)) { return [int64]$n }
-            }
+    try { $parsed = $resp.Content | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    foreach ($entry in @($parsed)) {
+      if ($null -ne $entry.rows) {
+        foreach ($r in @($entry.rows)) {
+          $vals = @($r)
+          if ($vals.Count -gt 0) {
+            $n = 0L
+            if ([int64]::TryParse([string]$vals[0], [ref]$n)) { return [int64]$n }
           }
         }
       }
     }
-    # Fall back to grabbing the first integer in the body.
-    if ($resp.Content -match '(\d+)') { return [int64]$Matches[1] }
     return $null
   } catch {
     return $null
