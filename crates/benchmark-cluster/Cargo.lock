@@ -92,7 +92,6 @@ version = "0.1.0"
 dependencies = [
  "arcane-core",
  "arcane-infra",
- "reqwest",
  "serde_json",
  "uuid",
 ]
