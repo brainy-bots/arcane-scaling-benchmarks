@@ -105,7 +105,15 @@ function Get-BenchmarkRunIntentFromBenchmarkPwshArgs {
     }
     else {
       $raw = Get-Content -LiteralPath $full -Raw -Encoding utf8 -ErrorAction Stop
-      $cfg = $raw | ConvertFrom-Json -ErrorAction Stop
+      # Strip JSONC comments before parsing — configs/*.json carry inline `//`
+      # descriptions for every field. Keep this in sync with
+      # ConvertFrom-BenchmarkConfigJsonc in scripts/BenchmarkHarnessHelpers.ps1.
+      $cleaned = [regex]::Replace($raw, '("(?:\\.|[^"\\])*")|(//[^\r\n]*)|(/\*[\s\S]*?\*/)', {
+        param($m)
+        if ($m.Groups[1].Success) { return $m.Groups[1].Value }
+        return ''
+      })
+      $cfg = $cleaned | ConvertFrom-Json -ErrorAction Stop
       $configLoaded = $true
       foreach ($prop in $cfg.PSObject.Properties) {
         $pn = $prop.Name

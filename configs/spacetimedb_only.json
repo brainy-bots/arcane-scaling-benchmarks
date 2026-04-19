@@ -1,16 +1,83 @@
 {
-  "BenchmarkMode": "SpacetimeOnly",
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  spacetimedb_only — baseline setup.
+  //
+  //  All game logic (physics, collision, buffs, inventory, interactions) runs
+  //  inside one SpacetimeDB WASM module on a single machine. The swarm drives
+  //  clients; every request is an HTTP reducer call. There is no Arcane cluster
+  //  and no Redis. Ceilings produced by this config are directly comparable to
+  //  any arcane_plus_spacetimedb.clusters_N.json run because every canonical
+  //  workload parameter below is identical across configs.
+  //
+  //  To run a different scenario, pick a different config file — do not edit
+  //  values between runs. Values flagged "canonical" must stay the same across
+  //  all configs in this folder for ceilings to be comparable.
+  //
+  //  Comments use JSONC syntax (`//` line comments). The harness strips them
+  //  before calling ConvertFrom-Json — strict JSON editors may flag them but
+  //  the file parses correctly.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+  //  What this config runs. Read by Run-Benchmark.ps1 to pick a scenario.
+
+  // Dispatch key. Valid: "SpacetimeOnly" | "ArcanePlusSpacetime".
+  "BenchmarkMode":   "SpacetimeOnly",
+
+  // WASM module the SpacetimeDB server must publish before the driver starts.
+  // Metadata only — consumed by the pre-SSM validator and docs; not by the
+  // PowerShell harness directly. Valid for SpacetimeOnly: must be
+  // "benchmark-spacetimedb-full" (the Persist module lacks the reducers the
+  // SpacetimeOnly swarm calls — update_player_input, use_item, etc.).
   "SpacetimeModule": "benchmark-spacetimedb-full",
-  "DurationSeconds": 30,
-  "SpacetimeStep": 250,
-  "SpacetimeMaxPlayers": 2000,
-  "MaxErrRate": 0.01,
-  "MaxLatencyMs": 200,
-  "BurstEnabled": true,
-  "BurstPeriodSecs": 30,
-  "BurstCohortPercent": 20,
-  "BurstActionsPerPlayer": 10,
-  "BurstWindowMs": 500,
-  "ZoneEventPeriodSecs": 30,
-  "ZoneEventWindowMs": 500
+
+  // ── sweep (what player counts to test) ────────────────────────────────────
+  //  The harness walks player counts starting at SpacetimeStep, adding
+  //  SpacetimeStep each tier, until it reaches SpacetimeMaxPlayers OR a tier
+  //  fails the pass criteria below (whichever comes first). The ceiling is
+  //  the highest tier that passed.
+
+  // First tier (also the step size). Integer >= 1.
+  "SpacetimeStep":        250,
+  // Upper bound on the sweep. Integer >= SpacetimeStep.
+  "SpacetimeMaxPlayers":  2000,
+  // Steady-state measurement window per tier, in seconds. The swarm settles
+  // for this long between RESET and REPORT on each tier before pass/fail is
+  // computed. Integer >= 1; 30 is the canonical published value.
+  "DurationSeconds":      30,
+
+  // ── pass / fail thresholds (canonical — match the published experiment) ───
+
+  // Fraction of calls that errored. Tier fails if (total_errs/total_calls) >= MaxErrRate.
+  // Double in [0,1]. 0.01 means "1% error budget".
+  "MaxErrRate":     0.01,
+  // Average request latency in milliseconds. Tier fails if lat_avg_ms >= MaxLatencyMs.
+  // Integer >= 1. 200 matches the published experiment's bar.
+  "MaxLatencyMs":   200,
+
+  // ── workload profile (canonical — keep identical across every config) ─────
+  //  Changing any value below makes ceilings produced by this config
+  //  incomparable to ceilings produced by the arcane_plus_spacetimedb configs
+  //  (and to any previously-published numbers).
+
+  // Deterministic worst-case burst: every BurstPeriodSecs seconds,
+  // BurstCohortPercent% of the current player count each fire
+  // BurstActionsPerPlayer actions within a BurstWindowMs window.
+
+  // On / off switch for the burst profile. Valid: true | false.
+  "BurstEnabled":           true,
+  // Seconds between bursts. Integer >= 1.
+  "BurstPeriodSecs":        30,
+  // Percent of players that participate in each burst. Integer in [1,100].
+  "BurstCohortPercent":     20,
+  // Actions fired by each cohort member per burst. Integer >= 1.
+  "BurstActionsPerPlayer":  10,
+  // Time window within which each cohort member fires its actions, in ms.
+  // Integer >= 1.
+  "BurstWindowMs":          500,
+
+  // Zone-wide event hitting every connected player simultaneously every
+  // ZoneEventPeriodSecs, windowed over ZoneEventWindowMs.
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
 }

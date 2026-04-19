@@ -244,6 +244,20 @@ function Get-SafeResultsEnvironmentSegment([string]$name) {
   return $s
 }
 
+# Strip JSONC comments ("//" line comments and "/* */" block comments) before
+# ConvertFrom-Json parses. Preserves string-literal contents via an alternation
+# that matches strings first. Keeps the config files human-readable — every
+# parameter in configs/*.json is documented inline.
+function ConvertFrom-BenchmarkConfigJsonc {
+  param([Parameter(Mandatory)][string]$Text)
+  $clean = [regex]::Replace($Text, '("(?:\\.|[^"\\])*")|(//[^\r\n]*)|(/\*[\s\S]*?\*/)', {
+    param($m)
+    if ($m.Groups[1].Success) { return $m.Groups[1].Value }
+    return ''
+  })
+  return ($clean | ConvertFrom-Json -ErrorAction Stop)
+}
+
 function Merge-ConfigFileParameters {
   param([string]$Path)
 
@@ -253,7 +267,7 @@ function Merge-ConfigFileParameters {
   }
 
   $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-  $cfg = $raw | ConvertFrom-Json -ErrorAction Stop
+  $cfg = ConvertFrom-BenchmarkConfigJsonc -Text $raw
   if ($null -eq $cfg) { return }
 
   $supported = @(

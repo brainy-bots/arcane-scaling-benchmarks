@@ -1,20 +1,85 @@
 {
-  "BenchmarkMode": "ArcanePlusSpacetime",
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  arcane_plus_spacetimedb — 5-cluster setup.
+  //
+  //  Arcane clusters own physics, collision, buffs, inventory, and player input.
+  //  Each client opens one WebSocket to its assigned cluster. Clusters replicate
+  //  entities between each other via Redis pub/sub. Clusters persist entity
+  //  snapshots to SpacetimeDB at 1 Hz (read-only storage from SpacetimeDB's
+  //  perspective — the Persist module does not implement game logic).
+  //
+  //  Ceilings produced by this config are comparable to spacetimedb_only.json
+  //  and to every other arcane_plus_spacetimedb.clusters_N.json because every
+  //  canonical workload parameter below is identical across configs.
+  //
+  //  To run with a different cluster count, pick a different configs/arcane_plus_spacetimedb.clusters_N.json —
+  //  do not edit ArcaneClusterCount here between runs. Values flagged
+  //  "canonical" must stay identical across all configs in this folder.
+  //
+  //  Comments use JSONC syntax (// line comments). The harness strips them
+  //  before calling ConvertFrom-Json.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+
+  // Dispatch key. Valid: "SpacetimeOnly" | "ArcanePlusSpacetime".
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+
+  // Number of Arcane cluster processes. Integer >= 1. On AWS, must be
+  // <= MaxArcaneClusters provisioned by Terraform (Run-Benchmark-Aws.ps1
+  // enforces this before SSM runs).
   "ArcaneClusterCount": 5,
-  "DurationSeconds": 30,
+
+  // WASM module the SpacetimeDB server must publish before the driver starts.
+  // Metadata only — consumed by the pre-SSM validator and docs. Valid for
+  // ArcanePlusSpacetime: must be "benchmark-spacetimedb-persist" (persist-only —
+  // clusters own physics, SpacetimeDB only stores entity snapshots).
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+
+  // Physics implementation used by the cluster's BenchmarkSimulation. Valid:
+  // "kinematic". Metadata only — not read by the harness.
+  "PhysicsEngine":      "kinematic",
+
+  // ── sweep (what player counts to test) ────────────────────────────────────
+  //  The harness walks player counts starting at ArcaneCeilingStartPlayers,
+  //  adding ArcaneCeilingStep each tier, until it reaches
+  //  ArcaneCeilingMaxPlayers OR a tier fails the pass criteria below.
+
+  // First tier. Integer >= 1.
   "ArcaneCeilingStartPlayers": 1500,
-  "ArcaneCeilingStep": 250,
-  "ArcaneCeilingMaxPlayers": 6000,
-  "PersistBatchSize": 0,
-  "MaxErrRate": 0.01,
-  "MaxLatencyMs": 200,
-  "BurstEnabled": true,
-  "BurstPeriodSecs": 30,
-  "BurstCohortPercent": 20,
-  "BurstActionsPerPlayer": 10,
-  "BurstWindowMs": 500,
-  "ZoneEventPeriodSecs": 30,
-  "ZoneEventWindowMs": 500,
-  "SpacetimeModule": "benchmark-spacetimedb-persist",
-  "PhysicsEngine": "kinematic"
+  // Step size between tiers. Integer >= 1.
+  "ArcaneCeilingStep":         250,
+  // Upper bound on the sweep. Integer >= ArcaneCeilingStartPlayers.
+  "ArcaneCeilingMaxPlayers":   6000,
+  // Steady-state measurement window per tier, in seconds. The swarm settles
+  // for this long between RESET and REPORT. Integer >= 1; 30 is canonical.
+  "DurationSeconds":           30,
+
+  // ── persistence (Arcane → SpacetimeDB) ────────────────────────────────────
+
+  // Max entities per SpacetimeDB persist HTTP request from a cluster.
+  // Integer >= 0. 0 = one request per persist tick (no batching); > 0 =
+  // split each persist tick into chunks of this size.
+  "PersistBatchSize":   0,
+
+  // ── pass / fail thresholds (canonical — match the published experiment) ───
+
+  // Fraction of calls that errored. Tier fails if (total_errs/total_calls) >= MaxErrRate.
+  "MaxErrRate":     0.01,
+  // Average request latency in milliseconds. Tier fails if lat_avg_ms >= MaxLatencyMs.
+  "MaxLatencyMs":   200,
+
+  // ── workload profile (canonical — keep identical across every config) ─────
+  //  Must match spacetimedb_only.json exactly so ceilings are comparable.
+
+  // Deterministic worst-case burst profile.
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+
+  // Zone-wide event hitting every player simultaneously.
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
 }
