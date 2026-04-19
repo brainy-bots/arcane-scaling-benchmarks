@@ -13,7 +13,7 @@
   //  values between runs. Values flagged "canonical" must stay the same across
   //  all configs in this folder for ceilings to be comparable.
   //
-  //  Comments use JSONC syntax (`//` line comments). The harness strips them
+  //  Comments use JSONC syntax (// line comments). The harness strips them
   //  before calling ConvertFrom-Json — strict JSON editors may flag them but
   //  the file parses correctly.
   // ═══════════════════════════════════════════════════════════════════════════
@@ -30,6 +30,17 @@
   // "benchmark-spacetimedb-full" (the Persist module lacks the reducers the
   // SpacetimeOnly swarm calls — update_player_input, use_item, etc.).
   "SpacetimeModule": "benchmark-spacetimedb-full",
+
+  // ── connectivity (local defaults; cloud drivers override at runtime) ──────
+  //  For local runs, these point at the services started by
+  //  scripts/Start-BenchmarkDeps.ps1. When the AWS driver invokes this script
+  //  over SSM it passes -SpacetimeHost as a CLI argument with the VPC private
+  //  IP — that CLI value overrides the value below.
+
+  // SpacetimeDB HTTP endpoint. String "http://<host>:<port>".
+  "SpacetimeHost":   "http://127.0.0.1:3000",
+  // SpacetimeDB database name the module was published to. Almost always "arcane".
+  "DatabaseName":    "arcane",
 
   // ── sweep (what player counts to test) ────────────────────────────────────
   //  The harness walks player counts starting at SpacetimeStep, adding
@@ -55,14 +66,29 @@
   // Integer >= 1. 200 matches the published experiment's bar.
   "MaxLatencyMs":   200,
 
-  // ── workload profile (canonical — keep identical across every config) ─────
-  //  Changing any value below makes ceilings produced by this config
-  //  incomparable to ceilings produced by the arcane_plus_spacetimedb configs
-  //  (and to any previously-published numbers).
+  // ── swarm client workload (canonical — keep identical across every config) ─
+  //  These control how the arcane-swarm load generator drives each simulated
+  //  player. Changing any value makes ceilings incomparable to ceilings from
+  //  other configs (and to any previously-published numbers).
 
-  // Deterministic worst-case burst: every BurstPeriodSecs seconds,
-  // BurstCohortPercent% of the current player count each fire
-  // BurstActionsPerPlayer actions within a BurstWindowMs window.
+  // Client physics/input tick rate, in Hz. Canonical 10.
+  "TickRateHz":               10,
+  // Game actions (pickup_item, use_item, interact) per player per second.
+  // Canonical 2.
+  "ActionsPerSec":            2,
+  // Client state read/refresh rate, in Hz. Canonical 5.
+  "ReadRateHz":               5,
+  // Movement profile. Valid: "spread" (deterministic wander over the full
+  // world) is the only supported mode today.
+  "SwarmMode":                "spread",
+  // Delay inserted between tiers, in seconds. Gives the server a moment to
+  // flush metrics before the next tier's measurement window starts.
+  "BetweenIncrementsSeconds": 1,
+
+  // ── burst profile (canonical) ─────────────────────────────────────────────
+  //  Deterministic worst-case burst: every BurstPeriodSecs seconds,
+  //  BurstCohortPercent% of the current player count each fire
+  //  BurstActionsPerPlayer actions within a BurstWindowMs window.
 
   // On / off switch for the burst profile. Valid: true | false.
   "BurstEnabled":           true,

@@ -310,6 +310,12 @@ function Merge-ConfigFileParameters {
     'ArcaneClusterBasePort',
     'ArcaneClusterPortStride',
     'ArcaneExternalProcesses',
+    # Validity-gate tuning knobs. Not normally in the config — changing them invalidates
+    # cross-run comparisons. Accepted here so a power-user override is still possible;
+    # each Invoke-*ScenarioRun wrapper provides a hardcoded fallback when unset.
+    'ArcaneRampTimeoutSeconds',
+    'ArcaneRampReachedRatio',
+    'ArcaneEntityObservedRatioMin',
     # Metadata keys — consumed by the AWS run validator / docs, not by Run-Benchmark.ps1. Accepted here so the
     # same config file works for both the local harness and the AWS-side topology validator.
     'BenchmarkMode',
@@ -1280,6 +1286,49 @@ function Export-ArcaneRunManifest {
 # + CLI overrides).
 # ──────────────────────────────────────────────────────────────────────────
 
+# Guard: throw early (before any scenario side-effect) if a variable the scenario
+# runner expects to read is not set in script scope. This catches typos in the
+# config file and parameters the author forgot to move from the old param block.
+# Treats $null and empty-or-whitespace strings as "missing"; 0 / $false are valid.
+function Assert-RequiredScriptVariablesSet {
+  param(
+    [Parameter(Mandatory)][string]$Scenario,
+    [Parameter(Mandatory)][string]$ConfigFile,
+    [Parameter(Mandatory)][string[]]$Fields
+  )
+  $missing = @()
+  foreach ($f in $Fields) {
+    $v = Get-Variable -Name $f -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $v)              { $missing += $f; continue }
+    if ($null -eq $v.Value)        { $missing += $f; continue }
+    if ($v.Value -is [string] -and [string]::IsNullOrWhiteSpace($v.Value)) { $missing += $f }
+  }
+  if ($missing.Count -gt 0) {
+    throw @"
+Scenario '$Scenario' requires these fields but they are missing after loading '$ConfigFile' (and after any CLI overrides were applied): $($missing -join ', ').
+Set them in the config JSON. Inline descriptions for each field live in the shipped configs/*.json.
+"@
+  }
+}
+
+# Apply hardcoded fallbacks for the validity-gate tuning knobs when the config
+# does not provide them. These control the ramp-up gate (how long to wait for
+# the server to reflect swarm connections before starting measurement) and the
+# minimum observed-entity ratio before a tier counts as valid. Changing them
+# invalidates cross-run comparisons, so configs rarely set them — but can.
+function Set-BenchmarkValidityGateFallbacks {
+  param([switch]$IncludeArcaneOnly)
+  if ($null -eq $ArcaneRampTimeoutSeconds) {
+    Set-Variable -Name 'ArcaneRampTimeoutSeconds' -Value 180 -Scope Script
+  }
+  if ($null -eq $ArcaneRampReachedRatio) {
+    Set-Variable -Name 'ArcaneRampReachedRatio' -Value 0.95 -Scope Script
+  }
+  if ($IncludeArcaneOnly -and $null -eq $ArcaneEntityObservedRatioMin) {
+    Set-Variable -Name 'ArcaneEntityObservedRatioMin' -Value 0.5 -Scope Script
+  }
+}
+
 function Resolve-BenchmarkRepoPaths {
   $suffix = Get-ExeSuffix
   Set-Variable -Name 'BenchmarkRoot' -Value (Resolve-Path (Join-Path $PSScriptRoot '..')) -Scope Script
@@ -1318,6 +1367,29 @@ function Invoke-SpacetimeOnlyScenarioRun {
   param([Parameter(Mandatory)][string]$EntryScriptPath)
 
   Set-Variable -Name 'SpacetimeOnlyRunEvidence' -Value @() -Scope Script
+
+  # Validity-gate knobs default to hardcoded fallbacks if the config didn't
+  # override them — these are internals users rarely touch.
+  Set-BenchmarkValidityGateFallbacks
+
+  # Everything else must be present in the config (or supplied as a CLI
+  # override). Throw a precise error BEFORE running any scenario side-effects
+  # so a typo in the config fails fast instead of producing a bogus run.
+  Assert-RequiredScriptVariablesSet -Scenario 'SpacetimeOnly' -ConfigFile $ConfigFile -Fields @(
+    # Connectivity
+    'SpacetimeHost', 'DatabaseName',
+    # Swarm client workload (canonical)
+    'TickRateHz', 'ActionsPerSec', 'ReadRateHz', 'SwarmMode',
+    'BetweenIncrementsSeconds',
+    # Sweep bounds
+    'SpacetimeStep', 'SpacetimeMaxPlayers', 'DurationSeconds',
+    # Pass criteria
+    'MaxErrRate', 'MaxLatencyMs',
+    # Burst / zone event profile (canonical)
+    'BurstEnabled', 'BurstPeriodSecs', 'BurstCohortPercent',
+    'BurstActionsPerPlayer', 'BurstWindowMs',
+    'ZoneEventPeriodSecs', 'ZoneEventWindowMs'
+  )
 
   Resolve-BenchmarkRepoPaths
   Resolve-BenchmarkOutDir
@@ -1380,9 +1452,35 @@ function Invoke-ArcaneScenarioRun {
 
   Set-Variable -Name 'ArcaneRunEvidence' -Value @() -Scope Script
 
+  # Validity-gate knobs default to hardcoded fallbacks when config doesn't
+  # override them; the Arcane scenario adds the cluster entity-observed gate.
+  Set-BenchmarkValidityGateFallbacks -IncludeArcaneOnly
+
   if ($null -eq $ArcaneClusterCounts -or $ArcaneClusterCounts.Count -eq 0) {
-    throw "Config set BenchmarkMode=ArcanePlusSpacetime but did not define ArcaneClusterCount/ArcaneClusterCounts. Pick a config under configs/arcane_plus_spacetimedb.clusters_*.json."
+    throw "Config set BenchmarkMode=ArcanePlusSpacetime but did not define ArcaneClusterCount. Pick a config under configs/ whose ArcaneClusterCount matches the setup you provisioned."
   }
+
+  Assert-RequiredScriptVariablesSet -Scenario 'ArcanePlusSpacetime' -ConfigFile $ConfigFile -Fields @(
+    # Connectivity (cloud drivers override RedisHost / SpacetimeHost at runtime)
+    'SpacetimeHost', 'DatabaseName', 'RedisHost', 'RedisPort',
+    # Arcane topology (cloud drivers override all of these)
+    'ArcaneManagerHost', 'ArcaneManagerPort',
+    'ArcaneClusterBasePort', 'ArcaneClusterPortStride',
+    # Swarm client workload (canonical)
+    'TickRateHz', 'ActionsPerSec', 'ReadRateHz', 'SwarmMode',
+    'BetweenIncrementsSeconds',
+    # Sweep bounds
+    'ArcaneCeilingStartPlayers', 'ArcaneCeilingStep', 'ArcaneCeilingMaxPlayers',
+    'DurationSeconds',
+    # Persistence
+    'SpacetimePersistHz', 'PersistBatchSize',
+    # Pass criteria
+    'MaxErrRate', 'MaxLatencyMs',
+    # Burst / zone event profile (canonical)
+    'BurstEnabled', 'BurstPeriodSecs', 'BurstCohortPercent',
+    'BurstActionsPerPlayer', 'BurstWindowMs',
+    'ZoneEventPeriodSecs', 'ZoneEventWindowMs'
+  )
 
   Resolve-BenchmarkRepoPaths
   Resolve-BenchmarkOutDir
