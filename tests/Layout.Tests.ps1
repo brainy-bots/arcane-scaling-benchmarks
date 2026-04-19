@@ -5,9 +5,16 @@ Describe 'Benchmark repository layout' {
     Test-Path -LiteralPath $p | Should -Be $true
   }
 
-  It 'exposes a single Run-Benchmark.ps1 entry script' {
+  It 'exposes a single Run-Benchmark.ps1 entry script (scenario selected by the config file)' {
     $p = Join-Path $PSScriptRoot '..\scripts\Run-Benchmark.ps1'
     Test-Path -LiteralPath $p | Should -Be $true
+  }
+
+  It 'does not expose per-scenario launcher scripts (BenchmarkMode in the config is the dispatch key)' {
+    $sp = Join-Path $PSScriptRoot '..\scripts\Run-Benchmark-SpacetimeOnly.ps1'
+    $ar = Join-Path $PSScriptRoot '..\scripts\Run-Benchmark-Arcane.ps1'
+    Test-Path -LiteralPath $sp | Should -Be $false
+    Test-Path -LiteralPath $ar | Should -Be $false
   }
 
   It 'exposes shared benchmark harness helpers' {

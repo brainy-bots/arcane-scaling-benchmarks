@@ -9,6 +9,7 @@
 #   docker run IMG arcane-manager                      # Arcane manager role
 #   docker run IMG benchmark-cluster                   # Arcane cluster role (physics + game actions)
 #   docker run IMG arcane-swarm <args>                 # Load generator role
+#   docker run IMG run-benchmark <...>                 # Driver: reads -ConfigFile; scenario is selected by the config
 #
 # Build locally:
 #   docker build -t arcane-benchmark:dev .
@@ -70,7 +71,7 @@ FROM clockworklabs/spacetime:v2.1.0
 
 USER root
 
-# PowerShell is installed for the "run-benchmark-sweep" role, which invokes
+# PowerShell is installed for the "run-benchmark" driver role, which invokes
 # scripts/Run-Benchmark.ps1 inside the container. All other roles are plain
 # bash or direct binaries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -89,16 +90,16 @@ COPY --from=builder /build/arcane_swarm/target/release/arcane-swarm             
 COPY --from=builder /build/crates/benchmark-spacetimedb-full/target/wasm32-unknown-unknown/release/benchmark_spacetimedb_full.wasm        /opt/modules/benchmark_spacetimedb_full.wasm
 COPY --from=builder /build/crates/benchmark-spacetimedb-persist/target/wasm32-unknown-unknown/release/benchmark_spacetimedb_persist.wasm /opt/modules/benchmark_spacetimedb_persist.wasm
 
-# Scripts + configs for the "run-benchmark-sweep" role. The pwsh orchestrator
-# iterates player tiers, invokes arcane-swarm (on PATH inside this image), and
-# writes CSVs to /var/benchmark/out which the caller is expected to mount.
+# Scripts + configs for the driver roles. The pwsh orchestrators iterate
+# player tiers, invoke arcane-swarm (on PATH inside this image), and write
+# CSVs to /var/benchmark/out which the caller is expected to mount.
 COPY scripts/ /opt/benchmark/scripts/
 COPY configs/ /opt/benchmark/configs/
 
 # Helpers exposed as role commands.
 COPY docker/benchmark-publish-module.sh /usr/local/bin/benchmark-publish-module
-COPY docker/run-benchmark-sweep.sh      /usr/local/bin/run-benchmark-sweep
-RUN chmod +x /usr/local/bin/benchmark-publish-module /usr/local/bin/run-benchmark-sweep
+COPY docker/run-benchmark.sh            /usr/local/bin/run-benchmark
+RUN chmod +x /usr/local/bin/benchmark-publish-module /usr/local/bin/run-benchmark
 
 # The spacetime base image already sets an entrypoint that runs `spacetime`; we
 # reset it so the command decides the role cleanly.

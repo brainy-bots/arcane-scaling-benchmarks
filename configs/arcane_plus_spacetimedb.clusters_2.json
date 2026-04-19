@@ -1,20 +1,131 @@
 {
-  "BenchmarkMode": "ArcanePlusSpacetime",
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  arcane_plus_spacetimedb — 2-cluster setup.
+  //
+  //  Arcane clusters own physics, collision, buffs, inventory, and player input.
+  //  Each client opens one WebSocket to its assigned cluster. Clusters replicate
+  //  entities between each other via Redis pub/sub. Clusters persist entity
+  //  snapshots to SpacetimeDB at SpacetimePersistHz (see persistence section
+  //  below). The Persist WASM module on SpacetimeDB's side does not implement
+  //  game logic — it just stores snapshots.
+  //
+  //  Ceilings produced by this config are comparable to spacetimedb_only.json
+  //  because every canonical workload parameter below is identical between the
+  //  two configs. To compare different cluster counts, add a sibling config
+  //  (e.g. arcane_plus_spacetimedb.clusters_3.json) with ArcaneClusterCount
+  //  changed and the rest kept identical; do not edit values here between runs.
+  //
+  //  Comments use JSONC syntax (// line comments). The harness strips them
+  //  before calling ConvertFrom-Json.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+
+  // Dispatch key. Valid: "SpacetimeOnly" | "ArcanePlusSpacetime".
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+
+  // Number of Arcane cluster processes. Integer >= 1. On AWS, must be
+  // <= MaxArcaneClusters provisioned by Terraform (Run-Benchmark-Aws.ps1
+  // enforces this before SSM runs).
   "ArcaneClusterCount": 2,
-  "DurationSeconds": 30,
+
+  // WASM module the SpacetimeDB server must publish before the driver starts.
+  // Metadata only — consumed by the pre-SSM validator and docs. Valid for
+  // ArcanePlusSpacetime: must be "benchmark-spacetimedb-persist" (persist-only —
+  // clusters own physics, SpacetimeDB only stores entity snapshots).
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+
+  // Physics implementation used by the cluster's BenchmarkSimulation. Valid:
+  // "kinematic". Metadata only — not read by the harness.
+  "PhysicsEngine":      "kinematic",
+
+  // ── connectivity (local defaults; cloud drivers override at runtime) ──────
+  //  Cloud drivers pass these as CLI overrides when invoking Run-Benchmark.ps1
+  //  over SSM, because the VPC private IPs only exist at provisioning time.
+  //  Local runs use the loopback defaults shown here.
+
+  // SpacetimeDB HTTP endpoint. String "http://<host>:<port>".
+  "SpacetimeHost":  "http://127.0.0.1:3000",
+  // SpacetimeDB database name. Almost always "arcane".
+  "DatabaseName":   "arcane",
+  // Redis used by Arcane clusters for entity pub/sub replication.
+  "RedisHost":      "127.0.0.1",
+  "RedisPort":      6379,
+
+  // ── Arcane topology (local defaults; cloud drivers override at runtime) ───
+
+  // arcane-manager HTTP host/port. Clients fetch their cluster assignment
+  // from here; the harness polls it to verify the manager is up before starting.
+  "ArcaneManagerHost": "127.0.0.1",
+  "ArcaneManagerPort": 8081,
+
+  // Per-cluster WebSocket hosts, one entry per cluster (index i = cluster i).
+  // Empty array means "all on localhost" (the local spawn path). Cloud
+  // AwsArcanePerHost topology overrides this with N distinct VPC IPs.
+  "ArcaneClusterHosts": [],
+
+  // Cluster WebSocket port layout. Port for cluster i = ArcaneClusterBasePort + i*Stride.
+  // Local default: stride 1 (clusters on the same host need different ports).
+  // Cloud AwsArcanePerHost: stride 0 (each cluster on its own host, same port).
+  "ArcaneClusterBasePort":   8090,
+  "ArcaneClusterPortStride": 1,
+
+  // When true, the harness assumes manager + clusters are already running
+  // somewhere else (cloud drivers set this; local runs leave false so the
+  // harness spawns them itself).
+  "ArcaneExternalProcesses": false,
+
+  // ── sweep (what player counts to test) ────────────────────────────────────
+  //  The harness walks player counts starting at ArcaneCeilingStartPlayers,
+  //  adding ArcaneCeilingStep each tier, until it reaches
+  //  ArcaneCeilingMaxPlayers OR a tier fails the pass criteria below.
+
+  // First tier. Integer >= 1.
   "ArcaneCeilingStartPlayers": 1500,
-  "ArcaneCeilingStep": 250,
-  "ArcaneCeilingMaxPlayers": 6000,
-  "PersistBatchSize": 0,
-  "MaxErrRate": 0.01,
-  "MaxLatencyMs": 200,
-  "BurstEnabled": true,
-  "BurstPeriodSecs": 30,
-  "BurstCohortPercent": 20,
-  "BurstActionsPerPlayer": 10,
-  "BurstWindowMs": 500,
-  "ZoneEventPeriodSecs": 30,
-  "ZoneEventWindowMs": 500,
-  "SpacetimeModule": "benchmark-spacetimedb-persist",
-  "PhysicsEngine": "kinematic"
+  // Step size between tiers. Integer >= 1.
+  "ArcaneCeilingStep":         250,
+  // Upper bound on the sweep. Integer >= ArcaneCeilingStartPlayers.
+  "ArcaneCeilingMaxPlayers":   6000,
+  // Steady-state measurement window per tier, in seconds. Integer >= 1; 30 is canonical.
+  "DurationSeconds":           30,
+
+  // ── persistence (Arcane → SpacetimeDB) ────────────────────────────────────
+
+  // Rate at which each cluster persists its entities to SpacetimeDB. Hz.
+  // Canonical 1 (once per second).
+  "SpacetimePersistHz": 1,
+  // Max entities per SpacetimeDB persist HTTP request from a cluster.
+  // Integer >= 0. 0 = one request per persist tick (no batching); > 0 =
+  // split each persist tick into chunks of this size.
+  "PersistBatchSize":   0,
+
+  // ── pass / fail thresholds (canonical — match the published experiment) ───
+
+  // Fraction of calls that errored. Tier fails if (total_errs/total_calls) >= MaxErrRate.
+  "MaxErrRate":     0.01,
+  // Average request latency in milliseconds. Tier fails if lat_avg_ms >= MaxLatencyMs.
+  "MaxLatencyMs":   200,
+
+  // ── swarm client workload (canonical — must match spacetimedb_only.json) ──
+
+  // Client physics/input tick rate, in Hz.
+  "TickRateHz":               10,
+  // Game actions per player per second.
+  "ActionsPerSec":            2,
+  // Client state read/refresh rate, in Hz.
+  "ReadRateHz":               5,
+  // Movement profile. Valid: "spread".
+  "SwarmMode":                "spread",
+  // Delay inserted between tiers, in seconds.
+  "BetweenIncrementsSeconds": 1,
+
+  // ── burst profile (canonical — matches spacetimedb_only.json) ─────────────
+
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
 }

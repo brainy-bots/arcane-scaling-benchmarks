@@ -1,22 +1,25 @@
 #!/bin/bash
-# Driver role. Runs the PowerShell benchmark orchestrator
-# (scripts/Run-Benchmark.ps1) from inside the image against an already-running
-# SpacetimeDB (and optionally Arcane manager/clusters). The orchestrator spawns
-# the arcane-swarm binary that ships in this image — no host toolchain is
-# required.
+# Driver role. Runs scripts/Run-Benchmark.ps1 from inside the image against an
+# already-running SpacetimeDB (and optionally Arcane manager/clusters). The
+# orchestrator spawns the arcane-swarm binary that ships in this image — no
+# host toolchain is required.
 #
-# The pwsh orchestrator is invoked via `-Command` (not `-File`) so callers can
-# pass full PowerShell syntax in the trailing args — in particular array
+# The scenario to run is selected by the config file the caller points at (via
+# --config): a SpacetimeDB-only config has BenchmarkMode=SpacetimeOnly; an
+# Arcane config has BenchmarkMode=ArcanePlusSpacetime. The PowerShell entry
+# dispatches accordingly.
+#
+# The pwsh orchestrator is invoked via `-Command` (not `-File`) so cloud drivers
+# can pass PowerShell syntax in the trailing args — in particular array
 # literals like `-ArcaneClusterHosts '10.0.0.1','10.0.0.2'` needed for
 # multi-host Arcane runs. Use `--` to separate this wrapper's flags from the
-# PowerShell tail.
+# PowerShell tail. Local runs don't need any tail args.
 #
 # Mount /var/benchmark/out to persist the run folder outside the container:
-#   docker run -v /host/out:/var/benchmark/out IMG run-benchmark-sweep \
+#   docker run -v /host/out:/var/benchmark/out IMG run-benchmark \
 #              --config /opt/benchmark/configs/spacetimedb_only.json \
 #              --spacetime-host http://<spacetime-vpc-ip>:3000 \
-#              --environment AwsSpacetimeOnly \
-#              -- '-FindArcaneCeiling:$false'
+#              --environment AwsSpacetimeOnly
 
 set -euo pipefail
 
@@ -49,9 +52,10 @@ mkdir -p "$OUT_DIR"
 
 export PATH="/usr/local/bin:${PATH}"
 
-# Build a PowerShell command string: the baseline flags with values single-
-# quoted for pwsh, then the verbatim EXTRA tail. EXTRA is already PS syntax as
-# the caller wrote it (e.g. -ArcaneClusterHosts '10.0.0.1','10.0.0.2').
+# The image always ships arcane-swarm, arcane-manager, and benchmark-cluster on
+# /usr/local/bin. Passing all three every time means the PS script doesn't need
+# to probe the filesystem — and the SpacetimeDB-only scenario simply ignores
+# the two Arcane paths.
 cmd="& '/opt/benchmark/scripts/Run-Benchmark.ps1'"
 cmd+=" -ConfigFile '$CONFIG'"
 cmd+=" -SpacetimeHost '$SPACETIME_HOST'"

@@ -14,8 +14,8 @@ Shared helpers live in [`../lib/AwsHelpers.ps1`](../lib/AwsHelpers.ps1). Routing
 
 | Name | Description |
 |------|-------------|
-| `AwsSpacetimeOnly` | Two EC2 instances: SpacetimeDB + driver. SpacetimeDB runs the benchmark image as `spacetime start`, then publishes the `Full` benchmark module into itself via `benchmark-publish-module`. Driver runs the image as `run-benchmark-sweep` against that SpacetimeDB. Security group allows TCP 3000 within the group. |
-| `AwsArcanePerHost` | Redis + SpacetimeDB + arcane-manager + N × benchmark-cluster + driver, each on its own EC2. Redis uses the stock `redis:7-alpine` image; every other node runs the benchmark image with a role command (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark-sweep`). Stable cluster UUIDs and instance layout are produced by Terraform and read by `Run-Benchmark-Aws.ps1`. Repeat runs with `ArcaneClusterCount ≤ MaxArcaneClusters` without reprovisioning. |
+| `AwsSpacetimeOnly` | Two EC2 instances: SpacetimeDB + driver. SpacetimeDB runs the benchmark image as `spacetime start`, then publishes the `Full` benchmark module into itself via `benchmark-publish-module`. Driver runs the image as `run-benchmark` with a SpacetimeDB-only config. Security group allows TCP 3000 within the group. |
+| `AwsArcanePerHost` | Redis + SpacetimeDB + arcane-manager + N × benchmark-cluster + driver, each on its own EC2. Redis uses the stock `redis:7-alpine` image; every other node runs the benchmark image with a role command (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark`). Stable cluster UUIDs and instance layout are produced by Terraform and read by `Run-Benchmark-Aws.ps1`. Repeat runs with `ArcaneClusterCount ≤ MaxArcaneClusters` without reprovisioning. |
 
 ## Adding a topology
 

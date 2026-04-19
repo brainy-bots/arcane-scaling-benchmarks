@@ -17,7 +17,7 @@ There is **no PowerShell path** to create or destroy AWS resources. Keeping that
 
 | Script | Purpose |
 |--------|---------|
-| **`Run-Benchmark-Aws.ps1`** | Drives a benchmark run over SSM on an already-provisioned fleet. Pulls the pre-built benchmark image on every node, runs the role containers (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark-sweep`), uploads results to S3, and optionally syncs results locally. Reads state JSON via `-StatePath`, image via `-BenchmarkImage`. |
+| **`Run-Benchmark-Aws.ps1`** | Drives a benchmark run over SSM on an already-provisioned fleet. Pulls the pre-built benchmark image on every node, runs the role containers (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark`), uploads results to S3, and optionally syncs results locally. Reads state JSON via `-StatePath`, image via `-BenchmarkImage`. The scenario is selected by the config file you pass (`BenchmarkMode` in the JSON). |
 | **`Collect-AwsBenchmarkResults.ps1`** | Checks drivers for in-flight SSM commands, then pulls every run folder from S3 into `results/runs/<Environment>/<RunId>/`. |
 | **`Sync-AwsBenchmarkResultsFromS3.ps1`** | Pulls a single `-RunId` (or `-S3Uri`) from S3 into `results/runs/...`. |
 

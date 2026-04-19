@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-  Run scripts/Run-Benchmark.ps1 on an already-provisioned EC2 benchmark fleet via SSM.
-  Every node pulls the same pre-built image; no compilation happens on EC2.
+  Run scripts/Run-Benchmark.ps1 on an already-provisioned EC2 benchmark fleet via SSM. The scenario
+  (SpacetimeDB-only vs Arcane+SpacetimeDB) is selected by the config file you pass, via its
+  BenchmarkMode field. Every node pulls the same pre-built image; no compilation happens on EC2.
 
 .DESCRIPTION
   **Step 2 of 3 — benchmark only.** Does **not** create or destroy AWS resources.
@@ -19,7 +20,7 @@
   **The benchmark image** contains `spacetime` (via the upstream base), `arcane-manager`,
   `benchmark-cluster`, `arcane-swarm`, the benchmark WASM modules, PowerShell 7, and the benchmark
   scripts/configs. Roles are selected by the container command (`spacetime start`, `arcane-manager`,
-  `benchmark-cluster`, `run-benchmark-sweep`, etc.). See the Dockerfile at the repo root.
+  `benchmark-cluster`, `run-benchmark`, etc.). See the Dockerfile at the repo root.
 
   **Pinning the image:** pass `-BenchmarkImage <registry>/<repo>:<tag>`. Tag should be pinned for
   reproducibility (`:latest` is convenient for dev but not for published numbers).
@@ -40,7 +41,8 @@
   new image tag.
 
 .PARAMETER ArcaneClusterCount
-  If `>= 0`, passed to Run-Benchmark.ps1 as `-ArcaneClusterCount`. Must be `<= MaxArcaneClusters`
+  If `>= 0`, validated against the topology before SSM and conveyed to Run-Benchmark.ps1 via the
+  config JSON (`ArcaneClusterCount`). Must be `<= MaxArcaneClusters`
   in state for AwsArcanePerHost.
 
 .PARAMETER BenchmarkImage

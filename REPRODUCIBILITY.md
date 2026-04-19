@@ -1,6 +1,6 @@
 # Reproducing the experiment
 
-The benchmark is driven by a **single script**: `scripts/Run-Benchmark.ps1`. It does **not** build binaries, pull images, or publish the SpacetimeDB module—you prepare those first, then run the script.
+The benchmark is driven by a **single script**: `scripts/Run-Benchmark.ps1`. The scenario (SpacetimeDB-only vs Arcane + SpacetimeDB) is selected by the **config file** you point it at — configs live in `configs/` and each one fully specifies a setup (workload parameters, sweep bounds, cluster count, which module to publish). The script does **not** build binaries, pull images, or publish the SpacetimeDB module — you prepare those first, then run the script with `-ConfigFile <your-config>.json`.
 
 **Runtime:** A full run can take **30+ minutes**. Use a separate terminal window so your IDE stays responsive.
 
@@ -84,15 +84,19 @@ cd ..\..
 
 ## Run the benchmark
 
-From the repo root (or any directory; paths resolve from the script location):
+From the repo root (or any directory; paths resolve from the script location), pick the config that matches the scenario you want:
 
 ```powershell
-.\scripts\Run-Benchmark.ps1
+# SpacetimeDB-only
+.\scripts\Run-Benchmark.ps1 -ConfigFile .\configs\spacetimedb_only.json
+
+# Arcane + SpacetimeDB (2 clusters) — ArcaneClusterCount lives in the config, not on the CLI
+.\scripts\Run-Benchmark.ps1 -ConfigFile .\configs\arcane_plus_spacetimedb.clusters_2.json
 ```
 
-Outputs go under `results/runs/<Environment>/<yyyyMMdd_HHmmss>/` by default (`-Environment` defaults to `Local`; use another label or match your cloud topology name). Each run has `spacetimedb_only/` and `arcane_plus_spacetimedb/` with `benchmark_scenarios_results.csv` and `stderr/` logs. Override with `-OutDir`. See `results/README.md`.
+The config's **`BenchmarkMode`** field dispatches the scenario; every workload parameter (tick rate, burst profile, sweep bounds, cluster count, pass criteria) lives in the config. One config per setup — to change parameters, pick or create a different config under `configs/` rather than editing values between runs.
 
-Useful switches: `-SpacetimeStep`, `-SpacetimeMaxPlayers`, `-ArcaneCeilingStartPlayers`, `-ArcaneClusterCounts`, `-FindArcaneCeiling:$false`, `-DurationSeconds`, `-PersistBatchSize`. See the script’s comment-based help.
+Outputs go under `results/runs/<Environment>/<yyyyMMdd_HHmmss>/` by default (`-Environment` defaults to `Local`; use another label or match your cloud topology name). Each run contains either `spacetimedb_only/` or `arcane_plus_spacetimedb/` with `benchmark_scenarios_results.csv` and `stderr/` logs. Override with `-OutDir`. See `results/README.md`.
 
 ---
 
@@ -119,7 +123,7 @@ Compare ceiling lines from the script output or CSVs with **arcane-demos** `docs
 Optional flow (three phases, split by tool so every AWS resource is declarative). **Requires Terraform (>= 1.3)** — see [module install instructions](infra/terraform/aws_benchmark/README.md#install-terraform) (works on Windows, macOS, Linux).
 
 1. **Provision** — `terraform apply` in **`infra/terraform/aws_benchmark/`** creates the EC2 fleet, security group, S3 artifact bucket, IAM role, and instance profile. Pick the topology with **`-var=topology=AwsSpacetimeOnly`** (SpacetimeDB + driver) or **`-var=topology=AwsArcanePerHost`** (Redis + SpacetimeDB + manager + N clusters + driver). Export state for the run phase: `terraform output -json benchmark_state > .benchmark-aws-terraform.json`.
-2. **Run** — **`infra/aws/Run-Benchmark-Aws.ps1 -StatePath .benchmark-aws-terraform.json -ConfigFile <...> -BenchmarkImage ghcr.io/<org>/arcane-benchmark:<tag>`** invokes SSM on every node to `docker pull` the pre-built benchmark image and `docker run` the role container (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark-sweep`). Nothing is compiled on EC2. Results are uploaded to S3; **`infra/aws/Collect-AwsBenchmarkResults.ps1`** / **`Sync-AwsBenchmarkResultsFromS3.ps1`** pull them into **`results/runs/<Environment>/<runId>/`** locally.
+2. **Run** — **`infra/aws/Run-Benchmark-Aws.ps1 -StatePath .benchmark-aws-terraform.json -ConfigFile <...> -BenchmarkImage ghcr.io/<org>/arcane-benchmark:<tag>`** invokes SSM on every node to `docker pull` the pre-built benchmark image and `docker run` the role container (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark`). Nothing is compiled on EC2. Results are uploaded to S3; **`infra/aws/Collect-AwsBenchmarkResults.ps1`** / **`Sync-AwsBenchmarkResultsFromS3.ps1`** pull them into **`results/runs/<Environment>/<runId>/`** locally.
 3. **Tear down** — `terraform destroy` removes every resource. No alternate cleanup path exists; this keeps reproduction deterministic for anyone starting from an empty AWS account.
 
 See **`infra/terraform/aws_benchmark/README.md`** for the module details.
