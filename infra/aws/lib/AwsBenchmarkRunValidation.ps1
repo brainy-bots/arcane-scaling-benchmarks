@@ -3,6 +3,12 @@
 # parameters), then overlay CLI-style tokens (cloud-injected overrides). Used by
 # Run-Benchmark-Aws.ps1 to fail before SSM when the run does not match provisioned topology.
 
+# Share the JSONC reader with Merge-ConfigFileParameters so both paths strip
+# `//` comments the same way. The helper lives under scripts/ alongside the
+# other pieces of the local harness.
+$script:__AwsBenchmarkRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+. (Join-Path $script:__AwsBenchmarkRepoRoot 'scripts\BenchmarkConfigJsonc.ps1')
+
 function Assert-BenchmarkPwshArgsCompatibleWithRemoteAwsTemplate {
   param(
     [Parameter(Mandatory)][string]$Environment,
@@ -105,15 +111,7 @@ function Get-BenchmarkRunIntentFromBenchmarkPwshArgs {
     }
     else {
       $raw = Get-Content -LiteralPath $full -Raw -Encoding utf8 -ErrorAction Stop
-      # Strip JSONC comments before parsing — configs/*.json carry inline `//`
-      # descriptions for every field. Keep this in sync with
-      # ConvertFrom-BenchmarkConfigJsonc in scripts/BenchmarkHarnessHelpers.ps1.
-      $cleaned = [regex]::Replace($raw, '("(?:\\.|[^"\\])*")|(//[^\r\n]*)|(/\*[\s\S]*?\*/)', {
-        param($m)
-        if ($m.Groups[1].Success) { return $m.Groups[1].Value }
-        return ''
-      })
-      $cfg = $cleaned | ConvertFrom-Json -ErrorAction Stop
+      $cfg = ConvertFrom-BenchmarkConfigJsonc -Text $raw
       $configLoaded = $true
       foreach ($prop in $cfg.PSObject.Properties) {
         $pn = $prop.Name

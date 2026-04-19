@@ -2,6 +2,9 @@
 # and the Invoke-*ScenarioRun wrappers can Set-Variable -Scope Script into, and read from, the
 # entry script's scope via dynamic scope lookup).
 
+# JSONC reader (used by Merge-ConfigFileParameters and by the AWS pre-SSM validator).
+. (Join-Path $PSScriptRoot 'BenchmarkConfigJsonc.ps1')
+
 # Poll one cluster's /stats endpoint exposed by arcane-infra (CLUSTER_STATS_PORT,
 # default CLUSTER_WS_PORT + 1). Returns the parsed JSON object or $null on any
 # failure. Intentionally forgiving — callers decide whether a null result is fatal.
@@ -18,24 +21,6 @@ function Get-ArcaneClusterStatsJson {
   } catch {
     return $null
   }
-}
-
-# Sum of entities observed across all provided cluster hosts, using the /stats
-# endpoint. Returns $null when any cluster failed to respond — don't treat a
-# failed poll as "0 entities", since that's also invalid.
-function Get-ArcaneClustersEntitiesTotal {
-  param(
-    [Parameter(Mandatory)][string[]]$ClusterHosts,
-    [int]$ClusterStatsPort = 8091,
-    [int]$TimeoutSec = 5
-  )
-  $sum = 0
-  foreach ($h in $ClusterHosts) {
-    $s = Get-ArcaneClusterStatsJson -ClusterHost $h -ClusterStatsPort $ClusterStatsPort -TimeoutSec $TimeoutSec
-    if ($null -eq $s) { return $null }
-    $sum += [int]$s.entities_current
-  }
-  return $sum
 }
 
 # Poll each cluster's /stats until the total entity count reaches a target
@@ -195,7 +180,6 @@ function Test-IsLocalLoopbackHostName([string]$TargetHost) {
 
 function Assert-ArcaneTopologyForSweep {
   param(
-    [Parameter(Mandatory)][bool]$FindArcaneCeiling,
     $ArcaneClusterCounts,
     [AllowEmptyCollection()][string[]]$ArcaneClusterHosts,
     [int]$ArcaneClusterPortStride,
@@ -203,7 +187,6 @@ function Assert-ArcaneTopologyForSweep {
     [string]$ArcaneManagerHost
   )
 
-  if (-not $FindArcaneCeiling) { return }
   if ($null -eq $ArcaneClusterCounts -or $ArcaneClusterCounts.Count -eq 0) { return }
   $maxN = ($ArcaneClusterCounts | Measure-Object -Maximum).Maximum
   if ($maxN -lt 1) { return }
@@ -242,20 +225,6 @@ function Get-SafeResultsEnvironmentSegment([string]$name) {
   $s = $name.Trim() -replace '[<>:"/\\|?*]', '_'
   if ([string]::IsNullOrWhiteSpace($s)) { return 'Local' }
   return $s
-}
-
-# Strip JSONC comments ("//" line comments and "/* */" block comments) before
-# ConvertFrom-Json parses. Preserves string-literal contents via an alternation
-# that matches strings first. Keeps the config files human-readable — every
-# parameter in configs/*.json is documented inline.
-function ConvertFrom-BenchmarkConfigJsonc {
-  param([Parameter(Mandatory)][string]$Text)
-  $clean = [regex]::Replace($Text, '("(?:\\.|[^"\\])*")|(//[^\r\n]*)|(/\*[\s\S]*?\*/)', {
-    param($m)
-    if ($m.Groups[1].Success) { return $m.Groups[1].Value }
-    return ''
-  })
-  return ($clean | ConvertFrom-Json -ErrorAction Stop)
 }
 
 function Merge-ConfigFileParameters {
@@ -913,114 +882,71 @@ function Run-Scenario-Arcane {
 # parameter-binding errors against a different entry.
 # ──────────────────────────────────────────────────────────────────────────
 
-function Add-ReproCommonBaselineArgs {
-  param([Parameter(Mandatory)]$Parts, [string]$ScriptPath, [string]$ConfigPath)
-  [void]$Parts.Add('pwsh')
-  [void]$Parts.Add('-NoProfile')
-  [void]$Parts.Add('-File')
-  [void]$Parts.Add((Escape-SingleQuotedPwsh $ScriptPath))
-  if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
-    [void]$Parts.Add('-ConfigFile')
-    [void]$Parts.Add((Escape-SingleQuotedPwsh $ConfigPath))
-  }
-}
-
-function Build-SpacetimeOnlyReproCommandLine {
-  param([Parameter(Mandatory)][string]$EntryScriptPath)
+# Build a reproducible `pwsh -NoProfile -File Run-Benchmark.ps1 ...` command line
+# for the run manifest. The command mirrors the actual Run-Benchmark.ps1 param
+# block — `-ConfigFile` (which carries every workload knob) plus the optional
+# cloud-injected overrides. Workload values (tick rate, burst profile, sweep
+# bounds, etc.) deliberately do NOT appear as flags here because
+# Run-Benchmark.ps1 does not accept them; they live only in the config file.
+# Anyone copy-pasting the emitted command lands on the same configuration that
+# produced the current manifest.
+function Build-BenchmarkReproCommandLine {
+  param(
+    [Parameter(Mandatory)][string]$EntryScriptPath,
+    [Parameter(Mandatory)][ValidateSet('SpacetimeOnly', 'ArcanePlusSpacetime')][string]$Scenario
+  )
   $inv = [System.Globalization.CultureInfo]::InvariantCulture
   $parts = [System.Collections.Generic.List[string]]::new()
-  Add-ReproCommonBaselineArgs -Parts $parts -ScriptPath $EntryScriptPath -ConfigPath $ConfigFile
+  [void]$parts.Add('pwsh')
+  [void]$parts.Add('-NoProfile')
+  [void]$parts.Add('-File')
+  [void]$parts.Add((Escape-SingleQuotedPwsh $EntryScriptPath))
+  [void]$parts.Add('-ConfigFile')
+  [void]$parts.Add((Escape-SingleQuotedPwsh $ConfigFile))
 
-  $ap = {
+  # Emit a string override only when it has a non-empty value — the empty
+  # string is what an unbound PS [string] param looks like after binding.
+  $addString = {
     param([string]$Name, $Value)
+    if ([string]::IsNullOrWhiteSpace([string]$Value)) { return }
     [void]$parts.Add("-$Name")
-    if ($null -eq $Value) { [void]$parts.Add("''"); return }
-    if ($Value -is [double] -or $Value -is [float] -or $Value -is [decimal]) { [void]$parts.Add([Convert]::ToDouble($Value).ToString($inv)); return }
-    if ($Value -is [int] -or $Value -is [long] -or $Value -is [byte] -or $Value -is [short]) { [void]$parts.Add($Value.ToString($inv)); return }
-    if ($Value -is [string]) { [void]$parts.Add((Escape-SingleQuotedPwsh $Value)); return }
-    if ($Value -is [System.Array]) { [void]$parts.Add(($Value -join ',')); return }
     [void]$parts.Add((Escape-SingleQuotedPwsh ([string]$Value)))
   }
-
-  & $ap 'SpacetimeStep' $SpacetimeStep
-  & $ap 'SpacetimeMaxPlayers' $SpacetimeMaxPlayers
-  & $ap 'DurationSeconds' $DurationSeconds
-  & $ap 'MaxErrRate' $MaxErrRate
-  & $ap 'MaxLatencyMs' $MaxLatencyMs
-  & $ap 'SpacetimeHost' $SpacetimeHost
-  & $ap 'DatabaseName' $DatabaseName
-  & $ap 'TickRateHz' $TickRateHz
-  & $ap 'ActionsPerSec' $ActionsPerSec
-  & $ap 'ReadRateHz' $ReadRateHz
-  & $ap 'SwarmMode' $SwarmMode
-  [void]$parts.Add($(if ($BurstEnabled) { '-BurstEnabled' } else { '-BurstEnabled:$false' }))
-  & $ap 'BurstPeriodSecs' $BurstPeriodSecs
-  & $ap 'BurstCohortPercent' $BurstCohortPercent
-  & $ap 'BurstActionsPerPlayer' $BurstActionsPerPlayer
-  & $ap 'BurstWindowMs' $BurstWindowMs
-  & $ap 'ZoneEventPeriodSecs' $ZoneEventPeriodSecs
-  & $ap 'ZoneEventWindowMs' $ZoneEventWindowMs
-  & $ap 'BetweenIncrementsSeconds' $BetweenIncrementsSeconds
-  & $ap 'Environment' $Environment
-  & $ap 'OutDir' $OutDir
-  & $ap 'SwarmExe' $SwarmExe
-
-  return ($parts -join ' ')
-}
-
-function Build-ArcaneReproCommandLine {
-  param([Parameter(Mandatory)][string]$EntryScriptPath)
-  $inv = [System.Globalization.CultureInfo]::InvariantCulture
-  $parts = [System.Collections.Generic.List[string]]::new()
-  Add-ReproCommonBaselineArgs -Parts $parts -ScriptPath $EntryScriptPath -ConfigPath $ConfigFile
-
-  $ap = {
+  # Always emit ints — 0 is a valid value for some (e.g. ArcaneClusterPortStride=0
+  # for AwsArcanePerHost). Only called for ints that belong in the repro given
+  # the scenario, so there are no 0-from-param-default false positives.
+  $addInt = {
     param([string]$Name, $Value)
+    if ($null -eq $Value) { return }
     [void]$parts.Add("-$Name")
-    if ($null -eq $Value) { [void]$parts.Add("''"); return }
-    if ($Value -is [double] -or $Value -is [float] -or $Value -is [decimal]) { [void]$parts.Add([Convert]::ToDouble($Value).ToString($inv)); return }
-    if ($Value -is [int] -or $Value -is [long] -or $Value -is [byte] -or $Value -is [short]) { [void]$parts.Add($Value.ToString($inv)); return }
-    if ($Value -is [string]) { [void]$parts.Add((Escape-SingleQuotedPwsh $Value)); return }
-    if ($Value -is [System.Array]) { [void]$parts.Add(($Value -join ',')); return }
-    [void]$parts.Add((Escape-SingleQuotedPwsh ([string]$Value)))
+    [void]$parts.Add(([int]$Value).ToString($inv))
   }
 
-  & $ap 'ArcaneClusterCounts' $ArcaneClusterCounts
-  & $ap 'ArcaneCeilingStartPlayers' $ArcaneCeilingStartPlayers
-  & $ap 'ArcaneCeilingStep' $ArcaneCeilingStep
-  & $ap 'ArcaneCeilingMaxPlayers' $ArcaneCeilingMaxPlayers
-  & $ap 'DurationSeconds' $DurationSeconds
-  & $ap 'PersistBatchSize' $PersistBatchSize
-  & $ap 'MaxErrRate' $MaxErrRate
-  & $ap 'MaxLatencyMs' $MaxLatencyMs
-  & $ap 'SpacetimeHost' $SpacetimeHost
-  & $ap 'DatabaseName' $DatabaseName
-  & $ap 'RedisHost' $RedisHost
-  & $ap 'RedisPort' $RedisPort
-  & $ap 'TickRateHz' $TickRateHz
-  & $ap 'ActionsPerSec' $ActionsPerSec
-  & $ap 'ReadRateHz' $ReadRateHz
-  & $ap 'SwarmMode' $SwarmMode
-  [void]$parts.Add($(if ($BurstEnabled) { '-BurstEnabled' } else { '-BurstEnabled:$false' }))
-  & $ap 'BurstPeriodSecs' $BurstPeriodSecs
-  & $ap 'BurstCohortPercent' $BurstCohortPercent
-  & $ap 'BurstActionsPerPlayer' $BurstActionsPerPlayer
-  & $ap 'BurstWindowMs' $BurstWindowMs
-  & $ap 'ZoneEventPeriodSecs' $ZoneEventPeriodSecs
-  & $ap 'ZoneEventWindowMs' $ZoneEventWindowMs
-  & $ap 'BetweenIncrementsSeconds' $BetweenIncrementsSeconds
-  & $ap 'SpacetimePersistHz' $SpacetimePersistHz
-  & $ap 'Environment' $Environment
-  & $ap 'OutDir' $OutDir
-  & $ap 'SwarmExe' $SwarmExe
-  & $ap 'ArcaneManagerExe' $ArcaneManagerExe
-  & $ap 'ArcaneClusterExe' $ArcaneClusterExe
-  & $ap 'ArcaneManagerHost' $ArcaneManagerHost
-  & $ap 'ArcaneManagerPort' $ArcaneManagerPort
-  & $ap 'ArcaneClusterHosts' $ArcaneClusterHosts
-  & $ap 'ArcaneClusterBasePort' $ArcaneClusterBasePort
-  & $ap 'ArcaneClusterPortStride' $ArcaneClusterPortStride
-  [void]$parts.Add($(if ($ArcaneExternalProcesses) { '-ArcaneExternalProcesses' } else { '-ArcaneExternalProcesses:$false' }))
+  # Shared overrides — used by both scenarios.
+  & $addString 'Environment'   $Environment
+  & $addString 'OutDir'        $OutDir
+  & $addString 'SpacetimeHost' $SpacetimeHost
+  & $addString 'DatabaseName'  $DatabaseName
+  & $addString 'SwarmExe'      $SwarmExe
+
+  # Arcane-only overrides. SpacetimeOnly does not use Redis, the Arcane binaries,
+  # or the cluster topology — including those flags in a SpacetimeOnly repro
+  # command would be noise that a reader has to mentally filter out.
+  if ($Scenario -eq 'ArcanePlusSpacetime') {
+    & $addString 'RedisHost'          $RedisHost
+    & $addInt    'RedisPort'          $RedisPort
+    & $addString 'ArcaneManagerExe'   $ArcaneManagerExe
+    & $addString 'ArcaneClusterExe'   $ArcaneClusterExe
+    if ($ArcaneExternalProcesses) { [void]$parts.Add('-ArcaneExternalProcesses') }
+    & $addString 'ArcaneManagerHost'  $ArcaneManagerHost
+    & $addInt    'ArcaneManagerPort'  $ArcaneManagerPort
+    if ($ArcaneClusterHosts -and $ArcaneClusterHosts.Count -gt 0) {
+      [void]$parts.Add('-ArcaneClusterHosts')
+      [void]$parts.Add((($ArcaneClusterHosts | ForEach-Object { Escape-SingleQuotedPwsh $_ }) -join ','))
+    }
+    & $addInt 'ArcaneClusterBasePort'   $ArcaneClusterBasePort
+    & $addInt 'ArcaneClusterPortStride' $ArcaneClusterPortStride
+  }
 
   return ($parts -join ' ')
 }
@@ -1075,7 +1001,7 @@ function Export-SpacetimeOnlyRunManifest {
       script_path                   = $EntryScriptPath
       host_powershell_line          = $BenchmarkHostInvocationLine
       config_file                   = $(if ([string]::IsNullOrWhiteSpace($ConfigFile)) { $null } else { (Resolve-Path -LiteralPath $ConfigFile).Path })
-      repro_command_pwsh_no_profile = (Build-SpacetimeOnlyReproCommandLine -EntryScriptPath $EntryScriptPath)
+      repro_command_pwsh_no_profile = (Build-BenchmarkReproCommandLine -EntryScriptPath $EntryScriptPath -Scenario 'SpacetimeOnly')
     }
     environment_label = (Get-SafeResultsEnvironmentSegment $Environment)
     pass_criteria     = @{
@@ -1192,7 +1118,7 @@ function Export-ArcaneRunManifest {
       script_path                   = $EntryScriptPath
       host_powershell_line          = $BenchmarkHostInvocationLine
       config_file                   = $(if ([string]::IsNullOrWhiteSpace($ConfigFile)) { $null } else { (Resolve-Path -LiteralPath $ConfigFile).Path })
-      repro_command_pwsh_no_profile = (Build-ArcaneReproCommandLine -EntryScriptPath $EntryScriptPath)
+      repro_command_pwsh_no_profile = (Build-BenchmarkReproCommandLine -EntryScriptPath $EntryScriptPath -Scenario 'ArcanePlusSpacetime')
     }
     environment_label = (Get-SafeResultsEnvironmentSegment $Environment)
     pass_criteria     = @{
@@ -1492,7 +1418,7 @@ function Invoke-ArcaneScenarioRun {
     Assert-SpacetimeReachable
     Assert-SwarmBinary
     Assert-RedisReachable
-    Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts $ArcaneClusterCounts `
+    Assert-ArcaneTopologyForSweep -ArcaneClusterCounts $ArcaneClusterCounts `
       -ArcaneClusterHosts $ArcaneClusterHosts -ArcaneClusterPortStride $ArcaneClusterPortStride `
       -ArcaneExternalProcesses ([bool]$ArcaneExternalProcesses) -ArcaneManagerHost $ArcaneManagerHost
     Assert-ArcaneBinaries

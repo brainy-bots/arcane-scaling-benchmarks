@@ -110,35 +110,31 @@ Describe 'Wait-SpacetimeDbReachEntityCount' {
 }
 
 Describe 'Assert-ArcaneTopologyForSweep' {
-  It 'no-ops when FindArcaneCeiling is false' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $false -ArcaneClusterCounts @(1, 2) -ArcaneClusterHosts @() -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '10.0.0.1' } | Should -Not -Throw
-  }
-
   It 'no-ops when ArcaneClusterCounts is empty' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts @() -ArcaneClusterHosts @() -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '127.0.0.1' } | Should -Not -Throw
+    { Assert-ArcaneTopologyForSweep -ArcaneClusterCounts @() -ArcaneClusterHosts @() -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '127.0.0.1' } | Should -Not -Throw
   }
 
   It 'throws when ArcaneClusterHosts is too short for max cluster count' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts @(1, 3) -ArcaneClusterHosts @('a') -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $true -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*at least 3 hostnames*'
+    { Assert-ArcaneTopologyForSweep -ArcaneClusterCounts @(1, 3) -ArcaneClusterHosts @('a') -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $true -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*at least 3 hostnames*'
   }
 
   It 'throws for stride 0 on localhost without per-host list' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts @(2) -ArcaneClusterHosts @() -ArcaneClusterPortStride 0 -ArcaneExternalProcesses $false -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*Set ArcaneClusterHosts*'
+    { Assert-ArcaneTopologyForSweep -ArcaneClusterCounts @(2) -ArcaneClusterHosts @() -ArcaneClusterPortStride 0 -ArcaneExternalProcesses $false -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*Set ArcaneClusterHosts*'
   }
 
   It 'throws for stride 0 with duplicate hosts' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts @(2) -ArcaneClusterHosts @('h1', 'h1') -ArcaneClusterPortStride 0 -ArcaneExternalProcesses $true -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*distinct ArcaneClusterHosts*'
+    { Assert-ArcaneTopologyForSweep -ArcaneClusterCounts @(2) -ArcaneClusterHosts @('h1', 'h1') -ArcaneClusterPortStride 0 -ArcaneExternalProcesses $true -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*distinct ArcaneClusterHosts*'
   }
 
   It 'throws for non-loopback manager without external processes' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts @(1) -ArcaneClusterHosts @() -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '10.0.0.1' } | Should -Throw '*ArcaneExternalProcesses*'
+    { Assert-ArcaneTopologyForSweep -ArcaneClusterCounts @(1) -ArcaneClusterHosts @() -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '10.0.0.1' } | Should -Throw '*ArcaneExternalProcesses*'
   }
 
   It 'throws for non-loopback cluster host without external processes' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts @(1) -ArcaneClusterHosts @('10.0.0.2') -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*remote hosts*'
+    { Assert-ArcaneTopologyForSweep -ArcaneClusterCounts @(1) -ArcaneClusterHosts @('10.0.0.2') -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '127.0.0.1' } | Should -Throw '*remote hosts*'
   }
 
   It 'allows non-loopback when ArcaneExternalProcesses is true' {
-    { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $true -ArcaneClusterCounts @(2) -ArcaneClusterHosts @('10.0.0.2', '10.0.0.3') -ArcaneClusterPortStride 0 -ArcaneExternalProcesses $true -ArcaneManagerHost '10.0.0.1' } | Should -Not -Throw
+    { Assert-ArcaneTopologyForSweep -ArcaneClusterCounts @(2) -ArcaneClusterHosts @('10.0.0.2', '10.0.0.3') -ArcaneClusterPortStride 0 -ArcaneExternalProcesses $true -ArcaneManagerHost '10.0.0.1' } | Should -Not -Throw
   }
 }
