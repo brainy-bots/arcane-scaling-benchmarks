@@ -22,8 +22,15 @@ pub const COLLISION_RADIUS: f64 = 50.0;
 pub const COLLISION_DAMAGE: u32 = 10;
 
 // ── Entity table (public: clients subscribe) ────────────────────────────────
+//
+// The `xz` btree index lets spatial range queries (clients reading "entities within
+// view radius") use an index instead of a full table scan. SpacetimeDB's docs
+// explicitly recommend this for multi-column range filters; without it, every
+// `WHERE x BETWEEN … AND z BETWEEN …` read is O(N) on the Entity table.
 
-#[table(accessor = entity, public)]
+#[table(accessor = entity, public,
+    index(accessor = xz, btree(columns = [x, z])),
+)]
 pub struct Entity {
     #[primary_key]
     pub entity_id: spacetimedb::Uuid,
@@ -104,6 +111,19 @@ pub struct PhysicsTimer {
     pub scheduled_at: spacetimedb::ScheduleAt,
 }
 
+// ── Cleanup timer ───────────────────────────────────────────────────────────
+// Fires `cleanup_tick` on a slow cadence so GameEvent doesn't grow unbounded
+// across a sweep. Without this, every interact action is an append-only insert
+// and `iter()` scans on GameEvent get more expensive each tier.
+
+#[table(accessor = cleanup_timer, scheduled(cleanup_tick))]
+pub struct CleanupTimer {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: spacetimedb::ScheduleAt,
+}
+
 // ── Tick counter (for buff expiration) ──────────────────────────────────────
 
 #[table(accessor = tick_counter)]
@@ -121,6 +141,10 @@ pub fn init(ctx: &ReducerContext) {
     ctx.db.physics_timer().insert(PhysicsTimer {
         scheduled_id: 0,
         scheduled_at: ScheduleAt::from(Duration::from_millis(50)),
+    });
+    ctx.db.cleanup_timer().insert(CleanupTimer {
+        scheduled_id: 0,
+        scheduled_at: ScheduleAt::from(Duration::from_secs(5)),
     });
     ctx.db.tick_counter().insert(TickCounter { id: 0, tick: 0 });
 }
@@ -152,10 +176,17 @@ pub fn physics_tick(ctx: &ReducerContext, _timer: PhysicsTimer) -> Result<(), St
         ctx.db.active_buff().entity_id().delete(&id);
     }
 
-    // Move entities
+    // Single pass: read each entity once, apply movement, then collision-check the
+    // post-movement positions. Previously this was two full `.iter()` scans in a row
+    // (one for movement, one to re-collect post-movement positions), which doubled
+    // the per-tick table cost for no gain — SpacetimeDB's perf docs explicitly flag
+    // `.iter()` over the full table as a slow pattern to avoid repeating.
     let step = PHYSICS_SPEED * PHYSICS_DT;
-    let entities: Vec<Entity> = ctx.db.entity().iter().collect();
-    for mut ent in entities {
+    // `moved` captures post-movement (id, x, z) so the collision pass doesn't have
+    // to re-read the Entity table. Only the three fields the collision loop needs
+    // are copied — the Entity row itself is passed into `update()` by value.
+    let mut moved: Vec<(spacetimedb::Uuid, f64, f64)> = Vec::new();
+    for mut ent in ctx.db.entity().iter() {
         let (dx, dz) = ctx
             .db
             .player_input()
@@ -164,7 +195,6 @@ pub fn physics_tick(ctx: &ReducerContext, _timer: PhysicsTimer) -> Result<(), St
             .map(|inp| (inp.dir_x, inp.dir_z))
             .unwrap_or((0.0, 0.0));
 
-        // Apply speed buff if active
         let speed_mult = ctx
             .db
             .active_buff()
@@ -176,19 +206,19 @@ pub fn physics_tick(ctx: &ReducerContext, _timer: PhysicsTimer) -> Result<(), St
         let effective_step = step * speed_mult;
         ent.x = (ent.x + dx * effective_step).clamp(WORLD_MIN, WORLD_MAX);
         ent.z = (ent.z + dz * effective_step).clamp(WORLD_MIN, WORLD_MAX);
+        moved.push((ent.entity_id, ent.x, ent.z));
         ctx.db.entity().entity_id().update(ent);
     }
 
-    // Collision detection — O(n^2) but that's the point: this is expensive work
-    // that Arcane distributes across clusters
-    let all: Vec<Entity> = ctx.db.entity().iter().collect();
+    // Collision detection on the already-moved positions — O(n²) like the Arcane
+    // cluster's version. The pair loop reads/writes Health rows by primary key.
     let radius_sq = COLLISION_RADIUS * COLLISION_RADIUS;
-    for i in 0..all.len() {
-        for j in (i + 1)..all.len() {
-            let dx = all[i].x - all[j].x;
-            let dz = all[i].z - all[j].z;
+    for i in 0..moved.len() {
+        for j in (i + 1)..moved.len() {
+            let dx = moved[i].1 - moved[j].1;
+            let dz = moved[i].2 - moved[j].2;
             if dx * dx + dz * dz < radius_sq {
-                apply_collision_damage(ctx, all[i].entity_id, all[j].entity_id);
+                apply_collision_damage(ctx, moved[i].0, moved[j].0);
             }
         }
     }
@@ -390,4 +420,12 @@ pub fn cleanup_old_events(ctx: &ReducerContext, max_age_secs: u64) -> Result<(),
         ctx.db.game_event().event_id().delete(&id);
     }
     Ok(())
+}
+
+/// Scheduled cleanup: drop GameEvent rows older than 30 seconds. Runs on the
+/// cadence defined by CleanupTimer (5s). Keeps the table bounded during a
+/// benchmark sweep without forcing the client to call cleanup_old_events.
+#[reducer]
+pub fn cleanup_tick(ctx: &ReducerContext, _timer: CleanupTimer) -> Result<(), String> {
+    cleanup_old_events(ctx, 30)
 }
