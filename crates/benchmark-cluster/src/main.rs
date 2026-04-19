@@ -10,13 +10,17 @@
 //!   REDIS_URL             — optional; default `redis://127.0.0.1:6379`.
 //!   NEIGHBOR_IDS          — optional; comma-separated UUIDs of neighbor clusters.
 //!   CLUSTER_WS_PORT       — optional; default 8080.
-//!   SPACETIMEDB_URI       — optional; default `http://127.0.0.1:3000`.
-//!   SPACETIMEDB_DATABASE  — optional; default `arcane`.
 //!
-//! Persistence (set by Run-Benchmark.ps1 or Docker):
+//! Persistence (read by `arcane_infra::spacetimedb_persist`; set by Run-Benchmark.ps1 or Docker):
+//!   SPACETIMEDB_URI          — SpacetimeDB HTTP endpoint (default `http://127.0.0.1:3000`).
+//!   SPACETIMEDB_DATABASE     — SpacetimeDB database name (default `arcane`).
 //!   SPACETIMEDB_PERSIST      — "1" or "true" to enable (default: disabled).
 //!   SPACETIMEDB_PERSIST_HZ   — persist frequency (default: 1).
 //!   SPACETIMEDB_PERSIST_BATCH_SIZE — entities per HTTP request (default: 0 = unlimited).
+//!
+//! The simulation itself does not talk to SpacetimeDB. Per-entity game state (HP,
+//! inventory, buffs) lives in cluster-local memory and rides on `entity.user_data`
+//! through the Arcane L1 auto-persist path.
 
 mod simulation;
 
@@ -51,12 +55,7 @@ fn main() -> Result<(), String> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(8080);
 
-    let spacetimedb_url =
-        env::var("SPACETIMEDB_URI").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
-    let database =
-        env::var("SPACETIMEDB_DATABASE").unwrap_or_else(|_| "arcane".to_string());
-
-    let sim = BenchmarkSimulation::new(spacetimedb_url, database);
+    let sim = BenchmarkSimulation::new();
 
     eprintln!(
         "benchmark-cluster: physics=kinematic collision_radius={} buff_duration={}ticks",

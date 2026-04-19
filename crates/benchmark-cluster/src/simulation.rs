@@ -1,20 +1,32 @@
-//! Benchmark simulation — implements ClusterSimulation with kinematic physics.
+//! Benchmark simulation — implements `ClusterSimulation` with kinematic physics.
+//!
+//! ## Progressive-API level-1 persistence
+//!
+//! Per-entity game state (HP, inventory, active buff, interaction counter) lives in
+//! cluster-local memory and rides along with the Arcane L1 auto-persist path — the cluster
+//! mutates each entity's `user_data` JSON at the end of every tick and the throttled
+//! `set_entities` snapshot flushes it into SpacetimeDB at 1 Hz. No per-action reducer calls,
+//! no HTTP client, no blocking the tick loop on SpacetimeDB round-trips.
+//!
+//! Before this module climbed to L1, every damage/use/pickup/interact event fired a blocking
+//! `reqwest::blocking` POST inside `on_tick`, stalling the tick loop and producing silently
+//! invalid benchmark numbers (entities=0 observed server-side under load).
 //!
 //! ## Fairness contract
 //!
 //! The physics constants and operations here MUST match the SpacetimeDB-only module's
 //! `physics_tick` reducer exactly. If you change a value here, change it in
-//! `crates/benchmark-spacetimedb-full/src/lib.rs` too.
-//!
-//! The collision detection algorithm is identical: O(n^2) pairwise distance check.
-//! This is intentionally expensive — it's the work that Arcane distributes across clusters.
+//! `crates/benchmark-spacetimedb-full/src/lib.rs` too. The collision detection algorithm is
+//! identical: O(n²) pairwise distance check. This is intentionally expensive — it's the work
+//! that Arcane distributes across clusters.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use arcane_core::cluster_simulation::{ClusterSimulation, ClusterTickContext};
 use uuid::Uuid;
 
-// ── Physics constants (MUST match benchmark-spacetimedb-full) ───────��───────
+// ── Physics constants (MUST match benchmark-spacetimedb-full) ────────────────
 pub const WORLD_SIZE: f64 = 5000.0;
 #[allow(dead_code)] // Documented for equivalence with SpacetimeDB physics_tick
 pub const PHYSICS_SPEED: f64 = 600.0;
@@ -26,125 +38,96 @@ pub const COLLISION_RADIUS: f64 = 50.0;
 pub const COLLISION_DAMAGE: u32 = 10;
 pub const BUFF_SPEED_MULTIPLIER: f64 = 2.0;
 pub const BUFF_DURATION_TICKS: u64 = 200; // 10 seconds at 20 Hz
+pub const INITIAL_HP: u32 = 100;
+const SPEED_POTION_ITEM: u32 = 0;
 
-/// Per-entity buff state tracked by the cluster (not persisted — ephemeral).
+#[derive(Default, Clone)]
 struct BuffState {
     speed_multiplier: f64,
     expires_at_tick: u64,
 }
 
-/// Benchmark simulation implementing kinematic physics, collision detection,
-/// buff application, and SpacetimeDB integration for game actions.
+/// Per-entity game state held cluster-local. Snapshotted into `entity.user_data` at the end
+/// of every tick so the L1 auto-persist path (1 Hz `set_entities`) carries it to SpacetimeDB.
+#[derive(Default, Clone)]
+struct GameState {
+    hp: u32,
+    /// item_type → quantity.
+    inventory: HashMap<u32, u32>,
+    buff: Option<BuffState>,
+    /// Lifetime count of `interact` actions originated by this entity. Cheap to carry; gives
+    /// the benchmark a non-trivial per-entity field that changes over time.
+    interaction_count: u32,
+}
+
+impl GameState {
+    fn fresh() -> Self {
+        Self {
+            hp: INITIAL_HP,
+            ..Self::default()
+        }
+    }
+
+    fn to_user_data(&self, tick: u64) -> serde_json::Value {
+        let inv: serde_json::Map<String, serde_json::Value> = self
+            .inventory
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::from(*v)))
+            .collect();
+        let buff = self
+            .buff
+            .as_ref()
+            .filter(|b| b.expires_at_tick > tick)
+            .map(|b| {
+                serde_json::json!({
+                    "mult": b.speed_multiplier,
+                    "expires": b.expires_at_tick,
+                })
+            });
+        serde_json::json!({
+            "hp": self.hp,
+            "inv": serde_json::Value::Object(inv),
+            "buff": buff,
+            "events": self.interaction_count,
+        })
+    }
+}
+
 pub struct BenchmarkSimulation {
-    /// SpacetimeDB HTTP endpoint for reducer calls (e.g. apply_damage, use_item).
-    spacetimedb_url: String,
-    /// SpacetimeDB database name.
-    database: String,
-    /// HTTP client for SpacetimeDB calls.
-    client: reqwest::blocking::Client,
-    /// Active buffs per entity (cluster-local, ephemeral).
-    buffs: std::sync::Mutex<HashMap<Uuid, BuffState>>,
+    /// Per-entity game state (cluster-local authoritative copy).
+    state: Mutex<HashMap<Uuid, GameState>>,
+}
+
+impl Default for BenchmarkSimulation {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BenchmarkSimulation {
-    pub fn new(spacetimedb_url: String, database: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            spacetimedb_url,
-            database,
-            client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .expect("reqwest client"),
-            buffs: std::sync::Mutex::new(HashMap::new()),
+            state: Mutex::new(HashMap::new()),
         }
-    }
-
-    fn reducer_url(&self, reducer: &str) -> String {
-        format!(
-            "{}/v1/database/{}/call/{}",
-            self.spacetimedb_url, self.database, reducer
-        )
-    }
-
-    fn call_apply_damage_batch(&self, targets: &[(Uuid, u32)]) {
-        if targets.is_empty() {
-            return;
-        }
-        let targets_json: String = targets
-            .iter()
-            .map(|(id, _)| format!("{{\"__uuid__\":{}}}", id.as_u128()))
-            .collect::<Vec<_>>()
-            .join(",");
-        let amounts_json: String = targets
-            .iter()
-            .map(|(_, amount)| amount.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let body = format!("[[{}],[{}]]", targets_json, amounts_json);
-        let _ = self
-            .client
-            .post(&self.reducer_url("apply_damage_batch"))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send();
-    }
-
-    fn call_use_item(&self, owner_id: Uuid, item_type: u32) -> bool {
-        let body = format!(
-            "[{{\"__uuid__\":{}}},{}]",
-            owner_id.as_u128(),
-            item_type
-        );
-        self.client
-            .post(&self.reducer_url("use_item"))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send()
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
-    }
-
-    fn call_pickup_item(&self, owner_id: Uuid, item_type: u32, quantity: u32) {
-        let body = format!(
-            "[{{\"__uuid__\":{}}},{},{}]",
-            owner_id.as_u128(),
-            item_type,
-            quantity
-        );
-        let _ = self
-            .client
-            .post(&self.reducer_url("pickup_item"))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send();
-    }
-
-    fn call_player_interact(&self, actor_id: Uuid, target_id: Uuid, event_type: u32) {
-        let body = format!(
-            "[{{\"__uuid__\":{}}},{{\"__uuid__\":{}}},{}]",
-            actor_id.as_u128(),
-            target_id.as_u128(),
-            event_type
-        );
-        let _ = self
-            .client
-            .post(&self.reducer_url("player_interact"))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send();
     }
 }
 
 impl ClusterSimulation for BenchmarkSimulation {
     fn on_tick(&self, ctx: &mut ClusterTickContext<'_>) {
         let tick = ctx.tick;
-        let mut buffs = self.buffs.lock().expect("buffs lock");
+        let mut state = self.state.lock().expect("game state lock");
 
-        // Expire old buffs
-        buffs.retain(|_, b| b.expires_at_tick > tick);
+        // Ensure every live entity has a state row; drop rows for entities no longer present.
+        state.retain(|id, _| ctx.entities.contains_key(id));
+        for id in ctx.entities.keys() {
+            state.entry(*id).or_insert_with(GameState::fresh);
+        }
 
-        // Process game actions from clients
+        // Process game actions from clients (mutate local state; no HTTP).
         for action in ctx.game_actions {
+            let Some(gs) = state.get_mut(&action.entity_id) else {
+                continue;
+            };
             match action.action_type.as_str() {
                 "use_item" => {
                     let item_type = action
@@ -152,18 +135,21 @@ impl ClusterSimulation for BenchmarkSimulation {
                         .get("item_type")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as u32;
-                    // Call SpacetimeDB to validate and consume
-                    if self.call_use_item(action.entity_id, item_type) {
-                        // Item 0 = speed potion: apply buff locally
-                        if item_type == 0 {
-                            buffs.insert(
-                                action.entity_id,
-                                BuffState {
-                                    speed_multiplier: BUFF_SPEED_MULTIPLIER,
-                                    expires_at_tick: tick + BUFF_DURATION_TICKS,
-                                },
-                            );
+                    let consumed = match gs.inventory.get_mut(&item_type) {
+                        Some(q) if *q > 0 => {
+                            *q -= 1;
+                            if *q == 0 {
+                                gs.inventory.remove(&item_type);
+                            }
+                            true
                         }
+                        _ => false,
+                    };
+                    if consumed && item_type == SPEED_POTION_ITEM {
+                        gs.buff = Some(BuffState {
+                            speed_multiplier: BUFF_SPEED_MULTIPLIER,
+                            expires_at_tick: tick + BUFF_DURATION_TICKS,
+                        });
                     }
                 }
                 "pickup_item" => {
@@ -177,70 +163,68 @@ impl ClusterSimulation for BenchmarkSimulation {
                         .get("quantity")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(1) as u32;
-                    self.call_pickup_item(action.entity_id, item_type, quantity);
+                    *gs.inventory.entry(item_type).or_insert(0) += quantity;
                 }
                 "interact" => {
-                    let target_id = action
-                        .payload
-                        .get("target_id")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| Uuid::parse_str(s).ok())
-                        .unwrap_or(Uuid::nil());
-                    let event_type = action
-                        .payload
-                        .get("event_type")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u32;
-                    self.call_player_interact(action.entity_id, target_id, event_type);
+                    gs.interaction_count = gs.interaction_count.saturating_add(1);
                 }
-                _ => {} // unknown action type — ignore
+                _ => {}
             }
         }
 
-        // Physics: move entities based on velocity.
-        // The swarm sends velocity as pre-computed displacement per tick:
-        //   vx = dir_x * MOVE_SPEED * tick_dt  (see arcane_swarm player.rs)
-        // So we add velocity directly, with buff speed multiplier applied.
-        // In SpacetimeDB-only mode, physics_tick reads raw direction and applies
-        // step = PHYSICS_SPEED * PHYSICS_DT. Here the swarm already did that,
-        // so we just multiply by speed_mult (1.0 if no buff).
+        // Physics: the swarm sends velocity as pre-computed per-tick displacement
+        // (dir * PHYSICS_SPEED * PHYSICS_DT), so we add it directly. Speed multiplier
+        // from any active buff applies on top.
         for entity in ctx.entities.values_mut() {
-            let speed_mult = buffs
+            let speed_mult = state
                 .get(&entity.entity_id)
+                .and_then(|gs| gs.buff.as_ref())
+                .filter(|b| b.expires_at_tick > tick)
                 .map(|b| b.speed_multiplier)
                 .unwrap_or(1.0);
 
-            entity.position.x = (entity.position.x + entity.velocity.x * speed_mult).clamp(WORLD_MIN, WORLD_MAX);
-            entity.position.z = (entity.position.z + entity.velocity.z * speed_mult).clamp(WORLD_MIN, WORLD_MAX);
+            entity.position.x =
+                (entity.position.x + entity.velocity.x * speed_mult).clamp(WORLD_MIN, WORLD_MAX);
+            entity.position.z =
+                (entity.position.z + entity.velocity.z * speed_mult).clamp(WORLD_MIN, WORLD_MAX);
         }
 
-        // Collision detection — O(n^2), same as SpacetimeDB-only mode.
-        // Damage is batched into a single SpacetimeDB call per tick to avoid
-        // N² blocking HTTP round-trips (which would unfairly penalize Arcane mode).
-        let entities: Vec<(Uuid, f64, f64)> = ctx
+        // Collision detection — O(n²), same as SpacetimeDB-only mode. Damage goes to local
+        // state; the 1 Hz L1 snapshot carries the resulting HP values into SpacetimeDB.
+        let ids_pos: Vec<(Uuid, f64, f64)> = ctx
             .entities
             .values()
             .map(|e| (e.entity_id, e.position.x, e.position.z))
             .collect();
         let radius_sq = COLLISION_RADIUS * COLLISION_RADIUS;
-        let mut damage_batch: Vec<(Uuid, u32)> = Vec::new();
-        for i in 0..entities.len() {
-            for j in (i + 1)..entities.len() {
-                let dx = entities[i].1 - entities[j].1;
-                let dz = entities[i].2 - entities[j].2;
+        for i in 0..ids_pos.len() {
+            for j in (i + 1)..ids_pos.len() {
+                let dx = ids_pos[i].1 - ids_pos[j].1;
+                let dz = ids_pos[i].2 - ids_pos[j].2;
                 if dx * dx + dz * dz < radius_sq {
-                    damage_batch.push((entities[i].0, COLLISION_DAMAGE));
-                    damage_batch.push((entities[j].0, COLLISION_DAMAGE));
+                    if let Some(gs) = state.get_mut(&ids_pos[i].0) {
+                        gs.hp = gs.hp.saturating_sub(COLLISION_DAMAGE);
+                    }
+                    if let Some(gs) = state.get_mut(&ids_pos[j].0) {
+                        gs.hp = gs.hp.saturating_sub(COLLISION_DAMAGE);
+                    }
                 }
             }
         }
-        self.call_apply_damage_batch(&damage_batch);
+
+        // Sync local state into entity.user_data so the L1 auto-persist snapshot carries it.
+        for (id, entity) in ctx.entities.iter_mut() {
+            if let Some(gs) = state.get(id) {
+                entity.user_data = gs.to_user_data(tick);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arcane_core::cluster_simulation::GameAction;
     use arcane_core::replication_channel::EntityStateEntry;
     use arcane_core::Vec3;
 
@@ -253,58 +237,162 @@ mod tests {
         )
     }
 
+    fn run_tick(
+        sim: &BenchmarkSimulation,
+        tick: u64,
+        entities: &mut HashMap<Uuid, EntityStateEntry>,
+        actions: &[GameAction],
+    ) {
+        let mut pending_removals: Vec<Uuid> = Vec::new();
+        let mut ctx = ClusterTickContext {
+            cluster_id: Uuid::nil(),
+            tick,
+            dt_seconds: 0.05,
+            entities,
+            pending_removals: &mut pending_removals,
+            game_actions: actions,
+        };
+        sim.on_tick(&mut ctx);
+    }
+
     #[test]
     fn physics_adds_velocity_directly_with_clamp() {
-        // Swarm sends velocity as pre-computed displacement: dir * MOVE_SPEED * tick_dt
-        // For dir_x=1.0: vx = 1.0 * 600 * 0.05 = 30.0
+        // Swarm sends velocity as displacement (dir * PHYSICS_SPEED * PHYSICS_DT = 30 for dir=1).
+        let sim = BenchmarkSimulation::new();
         let mut entities = HashMap::new();
         entities.insert(Uuid::from_u128(1), mk_entity(1, 2500.0, 2500.0, 30.0, 0.0));
 
-        // Cluster adds velocity directly (no re-multiplication by step)
-        for entity in entities.values_mut() {
-            entity.position.x = (entity.position.x + entity.velocity.x).clamp(WORLD_MIN, WORLD_MAX);
-            entity.position.z = (entity.position.z + entity.velocity.z).clamp(WORLD_MIN, WORLD_MAX);
-        }
+        run_tick(&sim, 1, &mut entities, &[]);
 
         let ent = entities.get(&Uuid::from_u128(1)).unwrap();
-        assert!((ent.position.x - 2530.0).abs() < 0.001, "x should be 2500 + 30 = 2530");
-        assert!((ent.position.z - 2500.0).abs() < 0.001, "z unchanged");
+        assert!((ent.position.x - 2530.0).abs() < 0.001);
+        assert!((ent.position.z - 2500.0).abs() < 0.001);
     }
 
     #[test]
     fn physics_clamps_to_world_bounds() {
+        let sim = BenchmarkSimulation::new();
         let mut entities = HashMap::new();
-        // vx = 30 (one tick displacement), position near max
-        entities.insert(Uuid::from_u128(1), mk_entity(1, WORLD_MAX - 10.0, 2500.0, 30.0, 0.0));
-
-        for entity in entities.values_mut() {
-            entity.position.x = (entity.position.x + entity.velocity.x).clamp(WORLD_MIN, WORLD_MAX);
-        }
-
+        entities.insert(
+            Uuid::from_u128(1),
+            mk_entity(1, WORLD_MAX - 10.0, 2500.0, 30.0, 0.0),
+        );
+        run_tick(&sim, 1, &mut entities, &[]);
         let ent = entities.get(&Uuid::from_u128(1)).unwrap();
-        assert_eq!(ent.position.x, WORLD_MAX, "should clamp to WORLD_MAX");
+        assert_eq!(ent.position.x, WORLD_MAX);
     }
 
     #[test]
-    fn collision_detection_finds_nearby_entities() {
-        let entities: Vec<(Uuid, f64, f64)> = vec![
-            (Uuid::from_u128(1), 100.0, 100.0),
-            (Uuid::from_u128(2), 130.0, 100.0), // 30 units away — within COLLISION_RADIUS (50)
-            (Uuid::from_u128(3), 500.0, 500.0), // far away
+    fn collision_drops_hp_locally_without_network() {
+        let sim = BenchmarkSimulation::new();
+        let mut entities = HashMap::new();
+        // Two entities 30 units apart — inside COLLISION_RADIUS (50).
+        entities.insert(Uuid::from_u128(1), mk_entity(1, 100.0, 100.0, 0.0, 0.0));
+        entities.insert(Uuid::from_u128(2), mk_entity(2, 130.0, 100.0, 0.0, 0.0));
+
+        run_tick(&sim, 1, &mut entities, &[]);
+
+        let e1 = entities.get(&Uuid::from_u128(1)).unwrap();
+        let ud = &e1.user_data;
+        assert_eq!(
+            ud["hp"].as_u64().unwrap(),
+            (INITIAL_HP - COLLISION_DAMAGE) as u64
+        );
+    }
+
+    #[test]
+    fn pickup_then_use_grants_buff_and_speeds_movement() {
+        let sim = BenchmarkSimulation::new();
+        let id = Uuid::from_u128(1);
+        let mut entities = HashMap::new();
+        entities.insert(id, mk_entity(1, 1000.0, 1000.0, 10.0, 0.0));
+
+        let pickup = GameAction {
+            entity_id: id,
+            action_type: "pickup_item".into(),
+            payload: serde_json::json!({ "item_type": 0, "quantity": 1 }),
+        };
+        let use_it = GameAction {
+            entity_id: id,
+            action_type: "use_item".into(),
+            payload: serde_json::json!({ "item_type": 0 }),
+        };
+
+        // Tick 1: pickup item. No buff yet, velocity multiplier 1.0.
+        run_tick(&sim, 1, &mut entities, &[pickup]);
+        assert_eq!(entities.get(&id).unwrap().position.x, 1010.0);
+
+        // Tick 2: use item — buff takes effect *this same tick* (applied before physics).
+        // Position advances by 10 * 2.0 = 20.
+        run_tick(&sim, 2, &mut entities, &[use_it]);
+        assert_eq!(entities.get(&id).unwrap().position.x, 1030.0);
+    }
+
+    #[test]
+    fn user_data_sync_carries_inventory_and_events() {
+        let sim = BenchmarkSimulation::new();
+        let id = Uuid::from_u128(1);
+        let mut entities = HashMap::new();
+        entities.insert(id, mk_entity(1, 2500.0, 2500.0, 0.0, 0.0));
+
+        let actions = vec![
+            GameAction {
+                entity_id: id,
+                action_type: "pickup_item".into(),
+                payload: serde_json::json!({ "item_type": 5, "quantity": 3 }),
+            },
+            GameAction {
+                entity_id: id,
+                action_type: "interact".into(),
+                payload: serde_json::json!({}),
+            },
         ];
-        let radius_sq = COLLISION_RADIUS * COLLISION_RADIUS;
-        let mut collisions = Vec::new();
-        for i in 0..entities.len() {
-            for j in (i + 1)..entities.len() {
-                let dx = entities[i].1 - entities[j].1;
-                let dz = entities[i].2 - entities[j].2;
-                if dx * dx + dz * dz < radius_sq {
-                    collisions.push((entities[i].0, entities[j].0));
-                }
-            }
-        }
-        assert_eq!(collisions.len(), 1);
-        assert_eq!(collisions[0].0, Uuid::from_u128(1));
-        assert_eq!(collisions[0].1, Uuid::from_u128(2));
+        run_tick(&sim, 1, &mut entities, &actions);
+
+        let ud = &entities.get(&id).unwrap().user_data;
+        assert_eq!(ud["hp"].as_u64().unwrap(), INITIAL_HP as u64);
+        assert_eq!(ud["inv"]["5"].as_u64().unwrap(), 3);
+        assert_eq!(ud["events"].as_u64().unwrap(), 1);
+        assert!(ud["buff"].is_null());
+    }
+
+    #[test]
+    fn buff_expires_and_clears_from_user_data() {
+        let sim = BenchmarkSimulation::new();
+        let id = Uuid::from_u128(1);
+        let mut entities = HashMap::new();
+        entities.insert(id, mk_entity(1, 2500.0, 2500.0, 0.0, 0.0));
+
+        let pickup = GameAction {
+            entity_id: id,
+            action_type: "pickup_item".into(),
+            payload: serde_json::json!({ "item_type": 0, "quantity": 1 }),
+        };
+        let use_it = GameAction {
+            entity_id: id,
+            action_type: "use_item".into(),
+            payload: serde_json::json!({ "item_type": 0 }),
+        };
+        run_tick(&sim, 1, &mut entities, &[pickup]);
+        run_tick(&sim, 2, &mut entities, &[use_it]);
+        assert!(!entities.get(&id).unwrap().user_data["buff"].is_null());
+
+        // Advance past expiration.
+        run_tick(&sim, 2 + BUFF_DURATION_TICKS + 1, &mut entities, &[]);
+        assert!(entities.get(&id).unwrap().user_data["buff"].is_null());
+    }
+
+    #[test]
+    fn state_row_is_reclaimed_when_entity_leaves() {
+        let sim = BenchmarkSimulation::new();
+        let id = Uuid::from_u128(1);
+        let mut entities = HashMap::new();
+        entities.insert(id, mk_entity(1, 2500.0, 2500.0, 0.0, 0.0));
+        run_tick(&sim, 1, &mut entities, &[]);
+        assert!(sim.state.lock().unwrap().contains_key(&id));
+
+        entities.clear();
+        run_tick(&sim, 2, &mut entities, &[]);
+        assert!(sim.state.lock().unwrap().is_empty());
     }
 }
