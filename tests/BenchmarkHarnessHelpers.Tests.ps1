@@ -92,6 +92,23 @@ Describe 'Test-IsLocalLoopbackHostName' {
   }
 }
 
+Describe 'Invoke-SpacetimeDbEntityCountQuery' {
+  It 'returns $null when the host is unreachable' {
+    # Port 1 is always refused on Linux/Windows test runners; keeps the test hermetic.
+    $r = Invoke-SpacetimeDbEntityCountQuery -SpacetimeHost 'http://127.0.0.1:1' -Database 'nope' -TimeoutSec 2
+    $r | Should -BeNullOrEmpty
+  }
+}
+
+Describe 'Wait-SpacetimeDbReachEntityCount' {
+  It 'returns Ready=false and reports timeout when the host is unreachable' {
+    $r = Wait-SpacetimeDbReachEntityCount -SpacetimeHost 'http://127.0.0.1:1' -Database 'nope' `
+      -TargetEntities 100 -TimeoutSeconds 2 -PollIntervalSeconds 1
+    $r.Ready | Should -BeFalse
+    $r.Detail | Should -Match 'ramp timed out'
+  }
+}
+
 Describe 'Assert-ArcaneTopologyForSweep' {
   It 'no-ops when FindArcaneCeiling is false' {
     { Assert-ArcaneTopologyForSweep -FindArcaneCeiling $false -ArcaneClusterCounts @(1, 2) -ArcaneClusterHosts @() -ArcaneClusterPortStride 1 -ArcaneExternalProcesses $false -ArcaneManagerHost '10.0.0.1' } | Should -Not -Throw

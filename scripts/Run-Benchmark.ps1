@@ -100,10 +100,12 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'BenchmarkHarnessHelpers.ps1')
 
-# Accumulator for per-tier server-side evidence (populated by Run-Scenario-Arcane,
-# consumed by Export-BenchmarkRunManifest). Initialized at script scope so
-# callers don't have to thread it through every function boundary.
+# Accumulators for per-tier server-side evidence (populated by Run-Scenario-Arcane /
+# Run-Scenario-SpacetimeOnly, consumed by Export-BenchmarkRunManifest).
+# Initialized at script scope so callers don't have to thread them through every
+# function boundary.
 $script:ArcaneRunEvidence = @()
+$script:SpacetimeOnlyRunEvidence = @()
 
 Merge-ConfigFileParameters -Path $ConfigFile
 
@@ -416,16 +418,21 @@ function Export-BenchmarkRunManifest {
     $bin.arcane_cluster = Get-BinaryInfo -LiteralPath $ArcaneClusterExe
   }
 
-  # Per-tier server-side evidence gathered by Run-Scenario-Arcane. If any tier
-  # came back invalid (cluster didn't see the entities the swarm claims to have
-  # spawned) the run is INVALID regardless of swarm-side pass/fail.
+  # Per-tier server-side evidence gathered by Run-Scenario-Arcane and
+  # Run-Scenario-SpacetimeOnly. If any tier came back invalid (cluster or
+  # SpacetimeDB didn't see the entities the swarm claims to have spawned) the
+  # run is INVALID regardless of swarm-side pass/fail.
   $arcaneEvidence = @(if ($null -ne $script:ArcaneRunEvidence) { $script:ArcaneRunEvidence } else { @() })
-  $invalidTiers = @($arcaneEvidence | Where-Object { -not $_.tier_valid })
-  $runValid = ($invalidTiers.Count -eq 0)
+  $spacetimeEvidence = @(if ($null -ne $script:SpacetimeOnlyRunEvidence) { $script:SpacetimeOnlyRunEvidence } else { @() })
+  $allEvidence = @($arcaneEvidence + $spacetimeEvidence)
+  $invalidTiers = @($allEvidence | Where-Object { -not $_.tier_valid })
+  $runValid = ($invalidTiers.Count -eq 0 -and $allEvidence.Count -gt 0)
   $validityFailures = @($invalidTiers | ForEach-Object {
+      $scenarioName = if ($_.PSObject.Properties.Name -contains 'scenario' -and $_.scenario) { [string]$_.scenario } else { 'arcane_plus_spacetimedb' }
+      $nsValue = if ($_.PSObject.Properties.Name -contains 'num_servers') { $_.num_servers } else { $null }
       [ordered]@{
-        scenario        = 'arcane_plus_spacetimedb'
-        num_servers     = $_.num_servers
+        scenario        = $scenarioName
+        num_servers     = $nsValue
         players         = $_.players
         reason          = $_.validity_reason
       }
@@ -440,7 +447,7 @@ function Export-BenchmarkRunManifest {
     run_error        = $(if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage })
     run_valid        = $runValid
     validity_failures = $validityFailures
-    per_tier_evidence = @($arcaneEvidence)
+    per_tier_evidence = @($allEvidence)
     harness          = @{
       script               = 'Run-Benchmark.ps1'
       benchmark_repo_root  = [string]$BenchmarkRoot
@@ -636,7 +643,30 @@ function Run-Scenario-SpacetimeOnly {
     while ($players -le $ScenarioMaxPlayers) {
       Write-Host "  [SpacetimeDB-only] testing players=$players ..." -ForegroundColor Gray
       Send-SwarmCommand -Port $ControlPort -Line "SET_PLAYERS $players"
-      Start-Sleep -Seconds 2
+
+      # Mirror the Arcane-mode validity gate: wait for SpacetimeDB's entity table to
+      # reflect the swarm's declared count before starting the measurement window.
+      # Without this, an empty or broken SpacetimeDB would silently "pass" the tier
+      # on swarm-side metrics alone, the way the pre-gate Arcane path used to.
+      $ramp = Wait-SpacetimeDbReachEntityCount -SpacetimeHost $SpacetimeHost -Database $DatabaseName `
+        -TargetEntities $players -ReachedRatioMin $ArcaneRampReachedRatio `
+        -TimeoutSeconds $ArcaneRampTimeoutSeconds -PollIntervalSeconds 2
+      Write-Host ("    [ramp] reached={0} target~{1} elapsed={2:N1}s ready={3}" `
+          -f $ramp.FinalTotal, $players, $ramp.ElapsedSec, $ramp.Ready) -ForegroundColor DarkGray
+      if (-not $ramp.Ready) {
+        Write-Host ("    [invalid] tier players=$players RAMP FAILED: $($ramp.Detail)") -ForegroundColor Yellow
+        $script:SpacetimeOnlyRunEvidence += [PSCustomObject]@{
+          scenario           = 'spacetimedb_only'
+          players            = $players
+          swarm_pass         = $false
+          entities_observed  = $ramp.FinalTotal
+          entities_required  = [int][Math]::Ceiling($players * $ArcaneRampReachedRatio)
+          tier_valid         = $false
+          validity_reason    = "ramp timeout: $($ramp.Detail)"
+        }
+        break
+      }
+
       Send-SwarmCommand -Port $ControlPort -Line 'RESET'
       Start-Sleep -Seconds $DurationSeconds
       Send-SwarmCommand -Port $ControlPort -Line 'REPORT'
@@ -646,6 +676,16 @@ function Run-Scenario-SpacetimeOnly {
       if (Test-Path $stderr) { $txt = Get-Content -Path $stderr -Raw -ErrorAction SilentlyContinue }
       $parsed = Parse-SwarmFinal $txt
       $pass = Test-BenchmarkPass $parsed
+
+      $script:SpacetimeOnlyRunEvidence += [PSCustomObject]@{
+        scenario           = 'spacetimedb_only'
+        players            = $players
+        swarm_pass         = [bool]$pass
+        entities_observed  = $ramp.FinalTotal
+        entities_required  = [int][Math]::Ceiling($players * $ArcaneRampReachedRatio)
+        tier_valid         = [bool]$pass
+        validity_reason    = $(if ($pass) { '' } else { 'swarm pass criteria not met (err_rate/latency)' })
+      }
 
       if ($pass) {
         $ceiling = $players
@@ -949,10 +989,20 @@ function Invoke-BenchmarkPhase {
     Write-Host '  Ceiling numbers below are swarm-side only and MUST NOT be treated as a saturation measurement.' -ForegroundColor Red
   }
 
+  $spInvalid = @($script:SpacetimeOnlyRunEvidence | Where-Object { -not $_.tier_valid })
+  if ($spInvalid.Count -gt 0) {
+    Write-Host "`n!!! INVALID SPACETIMEDB-ONLY RUN !!! $($spInvalid.Count) tier(s) failed server-side evidence check." -ForegroundColor Red
+    foreach ($t in $spInvalid) {
+      Write-Host ("  - players=$($t.players): $($t.validity_reason)") -ForegroundColor Red
+    }
+    Write-Host '  Ceiling numbers below are swarm-side only and MUST NOT be treated as a saturation measurement.' -ForegroundColor Red
+  }
+
   Write-Host "`n--- Ceiling summary ---" -ForegroundColor Cyan
   $sp = ($results | Where-Object { $_.backend -eq 'spacetimedb_only' } | Select-Object -First 1).ceiling_players
   $spLabel = if ($null -eq $sp) { 'none (no passing tier in this sweep)' } else { "$sp" }
-  Write-Host "  SpacetimeDB only: ceiling = $spLabel players"
+  $spSuffix = if ($spInvalid.Count -gt 0) { ' [INVALID — see warning above]' } else { '' }
+  Write-Host "  SpacetimeDB only: ceiling = $spLabel players$spSuffix"
   foreach ($r in ($results | Where-Object { $_.backend -eq 'arcane_plus_spacetimedb' } | Sort-Object { $_.num_servers })) {
     $suffix = if ($arcaneInvalid.Count -gt 0) { ' [INVALID — see warning above]' } else { '' }
     Write-Host "  Arcane + SpacetimeDB ($($r.num_servers) cluster(s)): ceiling = $($r.ceiling_players) players$suffix"
