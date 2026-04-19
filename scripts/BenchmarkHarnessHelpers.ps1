@@ -100,6 +100,92 @@ function Wait-ArcaneClustersReachEntityCount {
   }
 }
 
+# POST a COUNT query to SpacetimeDB's HTTP SQL endpoint and return the number.
+# SpacetimeDB 2.x exposes `POST /v1/database/{name}/sql` with the SQL text as body.
+# Anonymous access works when the module was published with --anonymous (which
+# docker/benchmark-publish-module.sh does). Returns $null on any failure —
+# callers treat null as "couldn't verify", not "0 entities".
+function Invoke-SpacetimeDbEntityCountQuery {
+  param(
+    [Parameter(Mandatory)][string]$SpacetimeHost,
+    [Parameter(Mandatory)][string]$Database,
+    [string]$Table = 'entity',
+    [int]$TimeoutSec = 5
+  )
+  $uri = ('{0}/v1/database/{1}/sql' -f $SpacetimeHost.TrimEnd('/'), $Database)
+  # SpacetimeDB's SQL engine rejects aggregate expressions without a column alias
+  # ("Aggregate expressions must have column aliases"), so `AS n` is required.
+  $body = "SELECT COUNT(*) AS n FROM $Table"
+  try {
+    $resp = Invoke-WebRequest -Uri $uri -Method Post -Body $body -ContentType 'text/plain' `
+      -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+    # Only accept the structured SpacetimeDB SQL result shape: array with .rows = [[N]].
+    # Any other shape (including error bodies that happen to contain integers) returns
+    # $null so the caller keeps polling instead of accepting a bogus count.
+    $parsed = $null
+    try { $parsed = $resp.Content | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    foreach ($entry in @($parsed)) {
+      if ($null -ne $entry.rows) {
+        foreach ($r in @($entry.rows)) {
+          $vals = @($r)
+          if ($vals.Count -gt 0) {
+            $n = 0L
+            if ([int64]::TryParse([string]$vals[0], [ref]$n)) { return [int64]$n }
+          }
+        }
+      }
+    }
+    return $null
+  } catch {
+    return $null
+  }
+}
+
+# Poll SpacetimeDB's entity table row count until it reaches the target ratio
+# of the swarm's declared player count, or until timeout. Mirrors
+# Wait-ArcaneClustersReachEntityCount for the SpacetimeDB-only scenario.
+# Returns the same @{ Ready; FinalTotal; ElapsedSec; Detail } hashtable.
+function Wait-SpacetimeDbReachEntityCount {
+  param(
+    [Parameter(Mandatory)][string]$SpacetimeHost,
+    [Parameter(Mandatory)][string]$Database,
+    [string]$Table = 'entity',
+    [Parameter(Mandatory)][int]$TargetEntities,
+    [double]$ReachedRatioMin = 0.95,
+    [int]$TimeoutSeconds = 180,
+    [int]$PollIntervalSeconds = 2
+  )
+  $required = [int][Math]::Ceiling($TargetEntities * $ReachedRatioMin)
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $started = Get-Date
+  $lastTotal = -1
+  $lastDetail = ''
+  while ((Get-Date) -lt $deadline) {
+    $n = Invoke-SpacetimeDbEntityCountQuery -SpacetimeHost $SpacetimeHost -Database $Database -Table $Table -TimeoutSec 5
+    if ($null -eq $n) {
+      $lastDetail = "spacetime $SpacetimeHost/$Database UNREACHABLE"
+    } else {
+      $lastTotal = [int]$n
+      $lastDetail = "spacetime $SpacetimeHost/$Database entities=$lastTotal"
+      if ($lastTotal -ge $required) {
+        return @{
+          Ready      = $true
+          FinalTotal = $lastTotal
+          ElapsedSec = ((Get-Date) - $started).TotalSeconds
+          Detail     = $lastDetail
+        }
+      }
+    }
+    Start-Sleep -Seconds $PollIntervalSeconds
+  }
+  return @{
+    Ready      = $false
+    FinalTotal = $lastTotal
+    ElapsedSec = ((Get-Date) - $started).TotalSeconds
+    Detail     = "ramp timed out after ${TimeoutSeconds}s: reached $lastTotal / $required required (target $TargetEntities). $lastDetail"
+  }
+}
+
 function Test-IsLocalLoopbackHostName([string]$TargetHost) {
   if ([string]::IsNullOrWhiteSpace($TargetHost)) { return $true }
   $x = $TargetHost.Trim().ToLowerInvariant()
