@@ -9,12 +9,10 @@
   //  perspective — the Persist module does not implement game logic).
   //
   //  Ceilings produced by this config are comparable to spacetimedb_only.json
-  //  and to every other arcane_plus_spacetimedb.clusters_N.json because every
-  //  canonical workload parameter below is identical across configs.
-  //
-  //  To run with a different cluster count, pick a different configs/arcane_plus_spacetimedb.clusters_N.json —
-  //  do not edit ArcaneClusterCount here between runs. Values flagged
-  //  "canonical" must stay identical across all configs in this folder.
+  //  because every canonical workload parameter below is identical between the
+  //  two configs. To compare different cluster counts, add a sibling config
+  //  (e.g. arcane_plus_spacetimedb.clusters_3.json) with ArcaneClusterCount
+  //  changed and the rest kept identical; do not edit values here between runs.
   //
   //  Comments use JSONC syntax (// line comments). The harness strips them
   //  before calling ConvertFrom-Json.

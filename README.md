@@ -93,8 +93,8 @@ cd ../..
 # SpacetimeDB-only ceiling
 ./scripts/Run-Benchmark.ps1 -ConfigFile ./configs/spacetimedb_only.json
 
-# Arcane + SpacetimeDB (1 cluster) — config carries BenchmarkMode=ArcanePlusSpacetime + ArcaneClusterCount
-./scripts/Run-Benchmark.ps1 -ConfigFile ./configs/arcane_plus_spacetimedb.clusters_1.json
+# Arcane + SpacetimeDB (2 clusters) — config carries BenchmarkMode=ArcanePlusSpacetime + ArcaneClusterCount
+./scripts/Run-Benchmark.ps1 -ConfigFile ./configs/arcane_plus_spacetimedb.clusters_2.json
 ```
 
 ### Docker Compose (Arcane mode)
