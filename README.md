@@ -51,7 +51,7 @@ crates/
   benchmark-cluster/             Arcane cluster binary with BenchmarkSimulation
 configs/                         Benchmark run configurations (JSON)
 scripts/
-  Run-Benchmark.ps1              Main benchmark driver
+  Run-Benchmark.ps1              Main benchmark driver (scenario selected by -ConfigFile)
   Start-BenchmarkDeps.ps1        Start Redis + SpacetimeDB in Docker
 arcane/                          Arcane Engine (git submodule, v0.1.0)
 arcane_swarm/                    Load generator (git submodule)
@@ -93,7 +93,7 @@ cd ../..
 # SpacetimeDB-only ceiling
 ./scripts/Run-Benchmark.ps1 -ConfigFile ./configs/spacetimedb_only.json
 
-# Arcane + SpacetimeDB (1 cluster)
+# Arcane + SpacetimeDB (1 cluster) — config carries BenchmarkMode=ArcanePlusSpacetime + ArcaneClusterCount
 ./scripts/Run-Benchmark.ps1 -ConfigFile ./configs/arcane_plus_spacetimedb.clusters_1.json
 ```
 

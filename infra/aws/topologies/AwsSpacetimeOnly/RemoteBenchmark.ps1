@@ -90,11 +90,10 @@ rm -rf "$OUT_DIR" && mkdir -p "$OUT_DIR"
 
 docker run --rm \
   -v "$OUT_DIR:/var/benchmark/out" \
-  "$IMG" run-benchmark-sweep \
+  "$IMG" run-benchmark \
     --config "$CONFIG_PATH" \
     --spacetime-host "http://${ST_IP}:3000" \
-    --environment AwsSpacetimeOnly \
-    -- '-FindArcaneCeiling:$false'
+    --environment AwsSpacetimeOnly
 EC=$?
 
 aws s3 sync "$OUT_DIR" "$S3_DEST" --region "$AWS_REGION"

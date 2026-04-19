@@ -20,7 +20,7 @@ These parameters are **fixed** across all ceiling/scaling experiments so that Sp
 
 Effective values for each run are also recorded in **`results/runs/<Environment>/<timestamp>/benchmark_run_manifest.json`** (see `results/README.md`) so CSV ceilings can be compared with exact thresholds and workload settings.
 
-`scripts/Run-Benchmark.ps1` supports `-ConfigFile <path-to-json>` for setting these parameters from one file.
+`scripts/Run-Benchmark.ps1` takes `-ConfigFile <path-to-json>` as its only required parameter; the config carries every workload parameter and its `BenchmarkMode` field selects the scenario.
 
 ## Error taxonomy used by `err_rate`
 
@@ -47,7 +47,7 @@ When enabled, the profile is fully deterministic and reproducible:
 
 There is **no** in-repo, cross-platform Docker recipe for artificial WAN-like delay that works for the typical **Windows + Docker Desktop** developer machine. Local runs remain valid for **workload and correctness** of the harness; **published** ceilings that must reflect **real multi-host RTT** should come from **cloud or multi-machine** runs (topology described in the run manifest and README).
 
-## Multi-host Arcane (`Run-Benchmark.ps1`)
+## Multi-host Arcane (`Run-Benchmark.ps1` with an Arcane config)
 
 | Parameter | Default | Role |
 |-----------|---------|------|

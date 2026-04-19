@@ -1,6 +1,7 @@
-# Resolves effective BenchmarkMode / ArcaneClusterCount from -BenchmarkPwshArgs the same way Run-Benchmark.ps1 does:
-# bind CLI-style tokens first, then apply -ConfigFile JSON on top for keys that exist in the file.
-# Used by Run-Benchmark-Aws.ps1 to fail before SSM when the run does not match provisioned topology.
+# Resolves effective BenchmarkMode / ArcaneClusterCount from -BenchmarkPwshArgs the same way
+# Run-Benchmark.ps1 does: apply -ConfigFile JSON first (it is the source of truth for workload
+# parameters), then overlay CLI-style tokens (cloud-injected overrides). Used by
+# Run-Benchmark-Aws.ps1 to fail before SSM when the run does not match provisioned topology.
 
 function Assert-BenchmarkPwshArgsCompatibleWithRemoteAwsTemplate {
   param(

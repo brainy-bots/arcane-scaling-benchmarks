@@ -4,15 +4,15 @@ This directory holds **run outputs** from [`scripts/Run-Benchmark.ps1`](../scrip
 
 ## Layout
 
-Each run is a folder:
+Each run is a folder. The scenario is selected by the config file you pass to `Run-Benchmark.ps1`; a single run produces either `spacetimedb_only/` or `arcane_plus_spacetimedb/`, not both:
 
 ```text
 results/runs/<Environment>/<yyyyMMdd_HHmmss>/
   benchmark_run_manifest.json   # effective parameters, pass criteria, binary SHA-256, host/git — compare runs with this
-  spacetimedb_only/
+  spacetimedb_only/             # present when BenchmarkMode=SpacetimeOnly
     benchmark_scenarios_results.csv
     stderr/*.log
-  arcane_plus_spacetimedb/
+  arcane_plus_spacetimedb/      # present when BenchmarkMode=ArcanePlusSpacetime
     benchmark_scenarios_results.csv
     stderr/*.log
 ```
@@ -25,5 +25,5 @@ results/runs/<Environment>/<yyyyMMdd_HHmmss>/
 
 ## Overrides
 
-- Pass **`-OutDir`** to `Run-Benchmark.ps1` to use a different root (the same `spacetimedb_only/` and `arcane_plus_spacetimedb/` children are still created). **`Environment` is ignored** when `-OutDir` is set.
+- Pass **`-OutDir`** to `Run-Benchmark.ps1` to use a different root (the corresponding `spacetimedb_only/` or `arcane_plus_spacetimedb/` child is still created). **`Environment` is ignored** when `-OutDir` is set.
 - **AWS:** same path inside the cloned repo on EC2 (`results/runs/<Environment>/<runId>/`), synced to **`s3://<bucket>/<prefix>/<Environment>/<runId>/`** (e.g. **`AwsSpacetimeOnly`** or **`AwsArcanePerHost`** — match **`-Environment`** when using `Sync-AwsBenchmarkResultsFromS3.ps1`).

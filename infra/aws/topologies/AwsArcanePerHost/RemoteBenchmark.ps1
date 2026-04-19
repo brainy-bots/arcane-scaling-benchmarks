@@ -169,8 +169,8 @@ echo "ERROR: cluster WS not listening on 8090"; docker logs arcane-bench-cluster
       -PollSeconds 5 -ThrowOnFailure
   }
 
-  # ── 5. Driver — image + run-benchmark-sweep + aws s3 sync ─────────────────
-  # run-benchmark-sweep invokes pwsh with -Command, so the tail is parsed as
+  # ── 5. Driver — image + run-benchmark + aws s3 sync ───────────────────────
+  # run-benchmark invokes pwsh with -Command, so the tail is parsed as
   # PowerShell. Emit a PS array literal for -ArcaneClusterHosts.
   $achInner = ($clusterIps | ForEach-Object { "'$_'" }) -join ','
   $pwshClusterHostsArg = "-ArcaneClusterHosts $achInner"
@@ -206,7 +206,7 @@ rm -rf "$OUT_DIR" && mkdir -p "$OUT_DIR"
 set +e
 docker run --rm \
   -v "$OUT_DIR:/var/benchmark/out" \
-  "$IMG" run-benchmark-sweep \
+  "$IMG" run-benchmark \
     --config "$CONFIG_PATH" \
     --spacetime-host "http://${ST_IP}:3000" \
     --environment AwsArcanePerHost \
