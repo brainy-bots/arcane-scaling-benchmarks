@@ -3,6 +3,7 @@ name = "benchmark-spacetimedb-persist"
 version = "0.1.0"
 edition = "2021"
 description = "SpacetimeDB module for Arcane benchmark mode. Persistence and game actions only — no physics (clusters handle simulation)."
+license = "AGPL-3.0-only"
 
 [lib]
 crate-type = ["cdylib"]
