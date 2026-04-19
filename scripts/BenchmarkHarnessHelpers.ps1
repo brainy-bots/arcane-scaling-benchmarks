@@ -274,7 +274,6 @@ function Merge-ConfigFileParameters {
     'SpacetimeStep',
     'SpacetimeMaxPlayers',
     'DurationSeconds',
-    'FindArcaneCeiling',
     'ArcaneClusterCounts',
     'ArcaneCeilingStartPlayers',
     'ArcaneCeilingStep',

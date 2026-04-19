@@ -196,9 +196,11 @@ if ([string]::IsNullOrWhiteSpace($BenchmarkMode)) {
   throw "Config '$ConfigFile' is missing required field 'BenchmarkMode'. Set it to 'SpacetimeOnly' or 'ArcanePlusSpacetime' in the config JSON, or pick a different config from configs/."
 }
 
-switch ($BenchmarkMode) {
-  'SpacetimeOnly'       { Invoke-SpacetimeOnlyScenarioRun -EntryScriptPath $PSCommandPath }
-  'ArcanePlusSpacetime' { Invoke-ArcaneScenarioRun       -EntryScriptPath $PSCommandPath }
+# Case-insensitive match so a config that says "spacetimeonly" or
+# "ArcanePlusSpacetime" both dispatch the same way.
+switch -Regex ($BenchmarkMode) {
+  '^(?i)SpacetimeOnly$'       { Invoke-SpacetimeOnlyScenarioRun -EntryScriptPath $PSCommandPath; break }
+  '^(?i)ArcanePlusSpacetime$' { Invoke-ArcaneScenarioRun       -EntryScriptPath $PSCommandPath; break }
   default { throw "Config '$ConfigFile' has unsupported BenchmarkMode '$BenchmarkMode'. Valid values: SpacetimeOnly, ArcanePlusSpacetime." }
 }
 
