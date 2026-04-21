@@ -48,18 +48,15 @@
   //  fails the pass criteria below (whichever comes first). The ceiling is
   //  the highest tier that passed.
 
-  // First tier (also the step size). Integer >= 1. Step 250 gives 24 tiers
-  // from 250 to 6000 — coarse but enough to find the tier at which
-  // SpacetimeDB actually saturates. A prior step-50 sweep showed 50→1500 all
-  // pass with flat ~50 ms latency and 0 errors (see run 20260421_142645), so
-  // that region is fully characterized and finer resolution below 1500 adds
-  // nothing. If this wide sweep finds a specific failing tier above 1500,
-  // rerun with a narrower step centered on it.
-  "SpacetimeStep":        250,
-  // Upper bound on the sweep. Integer >= SpacetimeStep. Set to 6000 to
-  // match the arcane_plus_spacetimedb configs' top tier so head-to-head
-  // numbers can share a common x-axis.
-  "SpacetimeMaxPlayers":  6000,
+  // First tier (also the step size). Integer >= 1. Step 50 gives tier
+  // resolution every 50 players for characterising behaviour near the
+  // saturation point — the `.wide` sibling config sweeps the same scenario
+  // at step 250 up to 6000 for first-pass ceiling discovery.
+  "SpacetimeStep":        50,
+  // Upper bound on the sweep. Integer >= SpacetimeStep. 1500 is slightly
+  // above the saturation band this config is sized to characterise; use
+  // `spacetimedb_only.wide.json` for higher ceilings.
+  "SpacetimeMaxPlayers":  1500,
   // Steady-state measurement window per tier, in seconds. The swarm settles
   // for this long between RESET and REPORT on each tier before pass/fail is
   // computed. Integer >= 1; 30 is the canonical published value.

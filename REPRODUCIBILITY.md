@@ -155,7 +155,22 @@ Compare ceiling lines from the script output or CSVs with **arcane-demos** `docs
 
 Optional flow (three phases, split by tool so every AWS resource is declarative). **Requires Terraform (>= 1.3)** — see [module install instructions](infra/terraform/aws_benchmark/README.md#install-terraform) (works on Windows, macOS, Linux).
 
-1. **Provision** — `terraform apply` in **`infra/terraform/aws_benchmark/`** creates the EC2 fleet, security group, S3 artifact bucket, IAM role, and instance profile. Pick the topology with **`-var=topology=AwsSpacetimeOnly`** (SpacetimeDB + driver) or **`-var=topology=AwsArcanePerHost`** (Redis + SpacetimeDB + manager + N clusters + driver). Export state for the run phase: `terraform output -json benchmark_state > .benchmark-aws-terraform.json`.
+1. **Provision** — `terraform apply` in **`infra/terraform/aws_benchmark/`** creates the EC2 fleet, security group, S3 artifact bucket, IAM role, and instance profile. The topology is selected by passing one of the **committed scenario tfvars files** with `-var-file`:
+
+   ```bash
+   # SpacetimeDB + driver
+   terraform apply -var-file=spacetimeonly.tfvars
+
+   # Redis + SpacetimeDB + manager + 2 cluster nodes + driver
+   terraform apply -var-file=arcaneperhost.clusters_2.tfvars
+   ```
+
+   **Never edit a tfvars file to switch scenarios.** The whole point of `-var-file` is that the topology is chosen at command time. To add a new topology or cluster count, drop a sibling file (e.g. `arcaneperhost.clusters_4.tfvars`) alongside the existing ones — do not mutate a shared file in place. The generic `terraform.tfvars` is `.gitignore`d so nobody accidentally makes it the canonical thing to edit.
+
+   After apply, export state for the run phase:
+   ```bash
+   terraform output -json benchmark_state > .benchmark-aws-terraform.json
+   ```
 2. **Run** — **`infra/aws/Run-Benchmark-Aws.ps1 -StatePath .benchmark-aws-terraform.json -ConfigFile <...> -BenchmarkImage ghcr.io/<org>/arcane-benchmark:<tag>`** invokes SSM on every node to `docker pull` the pre-built benchmark image and `docker run` the role container (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark`). Nothing is compiled on EC2. Results are uploaded to S3; **`infra/aws/Collect-AwsBenchmarkResults.ps1`** / **`Sync-AwsBenchmarkResultsFromS3.ps1`** pull them into **`results/runs/<Environment>/<runId>/`** locally.
 3. **Tear down** — `terraform destroy` removes every resource. No alternate cleanup path exists; this keeps reproduction deterministic for anyone starting from an empty AWS account.
 

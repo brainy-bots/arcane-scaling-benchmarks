@@ -1,0 +1,74 @@
+{
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  spacetimedb_only.wide — first-pass ceiling discovery for the
+  //  SpacetimeDB-only scenario.
+  //
+  //  Wider range than `spacetimedb_only.json` (step 250, max 6000 vs
+  //  step 50, max 1500). Use this to find the player tier at which
+  //  SpacetimeDB-only actually saturates; once that's known, rerun with
+  //  `spacetimedb_only.json` for fine resolution in the saturation band.
+  //
+  //  Every non-sweep knob is identical to `spacetimedb_only.json` — same
+  //  workload, same pass/fail criteria, same burst profile — so numbers
+  //  from either config are directly comparable to each other and to the
+  //  `arcane_plus_spacetimedb.clusters_N.json` runs.
+  //
+  //  Comments use JSONC syntax (// line comments). The harness strips them
+  //  before calling ConvertFrom-Json.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+
+  // Dispatch key. Valid: "SpacetimeOnly" | "ArcanePlusSpacetime".
+  "BenchmarkMode":   "SpacetimeOnly",
+
+  // WASM module the SpacetimeDB server must publish before the driver starts.
+  "SpacetimeModule": "benchmark-spacetimedb-full",
+
+  // ── connectivity (local defaults; cloud drivers override at runtime) ──────
+
+  "SpacetimeHost":   "http://127.0.0.1:3000",
+  "DatabaseName":    "arcane",
+
+  // ── sweep (wide — for first-pass ceiling discovery) ───────────────────────
+  //  The harness walks player counts starting at SpacetimeStep, adding
+  //  SpacetimeStep each tier, until it reaches SpacetimeMaxPlayers OR a tier
+  //  fails the pass criteria (whichever comes first).
+
+  // First tier (also the step size). Step 250 gives 24 tiers from 250 to
+  // 6000 — coarse but enough to localise the saturation tier. If a tier
+  // above 1500 fails, rerun with `spacetimedb_only.json` for a step-50
+  // sweep in the relevant range.
+  "SpacetimeStep":        250,
+  // Upper bound on the sweep. 6000 matches the arcane_plus_spacetimedb
+  // configs' top tier so the two runs share a common x-axis.
+  "SpacetimeMaxPlayers":  6000,
+  // Steady-state measurement window per tier, in seconds.
+  "DurationSeconds":      30,
+
+  // ── pass / fail thresholds (canonical — must match spacetimedb_only.json) ──
+  //
+  //  See `spacetimedb_only.json` for the full explanation of what
+  //  `lat_avg_ms` actually measures — same mechanism here, same threshold.
+
+  "MaxErrRate":     0.01,
+  "MaxLatencyMs":   200,
+
+  // ── swarm client workload (canonical — must match spacetimedb_only.json) ──
+
+  "TickRateHz":               10,
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+
+  // ── burst profile (canonical — must match spacetimedb_only.json) ──────────
+
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
+}
