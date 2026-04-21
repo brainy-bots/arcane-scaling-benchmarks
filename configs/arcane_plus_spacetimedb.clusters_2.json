@@ -111,10 +111,26 @@
   "PersistBatchSize":   0,
 
   // ── pass / fail thresholds (canonical — match the published experiment) ───
+  //
+  //  What the "latency" in these gates actually measures — read this before
+  //  tuning MaxLatencyMs:
+  //
+  //  The cluster's inbound WS pipe is fire-and-forget, so timing the client's
+  //  send call is meaningless (always ~0 ms regardless of load). Instead the
+  //  swarm reports **client-perceived latency**: the wall-clock gap between a
+  //  player's outbound write and the moment the cluster's next broadcast
+  //  frame carrying that player's own entity lands in the client's receive
+  //  buffer. That's the action-to-world-reflection time a real game client
+  //  experiences. Under cluster load the tick slides later, the broadcast
+  //  arrives late, and the number rises. This is the number that matters
+  //  for "is the game playable at this many players." The head-to-head
+  //  measurement in spacetimedb_only.json uses the same semantics against
+  //  SpacetimeDB's subscription push.
 
   // Fraction of calls that errored. Tier fails if (total_errs/total_calls) >= MaxErrRate.
   "MaxErrRate":     0.01,
-  // Average request latency in milliseconds. Tier fails if lat_avg_ms >= MaxLatencyMs.
+  // Client-perceived latency ceiling, in milliseconds — see the block above
+  // for what is actually measured. Tier fails if lat_avg_ms >= MaxLatencyMs.
   "MaxLatencyMs":   200,
 
   // ── swarm client workload (canonical — must match spacetimedb_only.json) ──
