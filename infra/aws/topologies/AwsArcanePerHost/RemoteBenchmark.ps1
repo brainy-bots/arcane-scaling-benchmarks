@@ -303,8 +303,21 @@ echo "diag uploaded to __DIAG_ROOT__/$LABEL/"
         $script = $script -replace "`r`n", "`n"
         $dcId = Send-SsmRunShellScript -Region $Region -InstanceId $n.InstanceId -ScriptBody $script `
           -Comment "Arcane arph diag $($n.Label) $RunId" -TimeoutSeconds 300
-        $null = Wait-SsmCommandInvocation -Region $Region -InstanceId $n.InstanceId -CommandId $dcId `
+        $diagInv = Wait-SsmCommandInvocation -Region $Region -InstanceId $n.InstanceId -CommandId $dcId `
           -Label "Diag $($n.Label)" -PollSeconds 3
+        # Wait-SsmCommandInvocation returns without throwing even on Status=Failed
+        # (diag is best-effort, so we don't want one failure to abort teardown).
+        # Surface the on-host stderr tail when the script fails so future diag
+        # breakages are self-diagnosing instead of appearing as a silent "5/5 Failed".
+        if ($diagInv.Status -ne 'Success') {
+          $errTail = ($diagInv.StandardErrorContent -split "`n" | Select-Object -Last 20) -join "`n"
+          $outTail = ($diagInv.StandardOutputContent -split "`n" | Select-Object -Last 10) -join "`n"
+          Write-Warning "Diag capture for $($n.Label) ($($n.InstanceId)) Status=$($diagInv.Status)."
+          Write-Host "--- diag stderr tail ---" -ForegroundColor DarkGray
+          Write-Host $errTail
+          Write-Host "--- diag stdout tail ---" -ForegroundColor DarkGray
+          Write-Host $outTail
+        }
       } catch {
         Write-Warning "Diag capture for $($n.Label) ($($n.InstanceId)) failed: $($_.Exception.Message). Continuing with remaining nodes."
       }
