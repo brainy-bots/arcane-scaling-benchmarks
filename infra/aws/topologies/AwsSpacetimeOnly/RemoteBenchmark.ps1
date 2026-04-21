@@ -46,7 +46,7 @@ docker pull "$IMG"
 
 # SpacetimeDB server container
 docker rm -f arcane-bench-spacetime 2>/dev/null || true
-docker run -d --name arcane-bench-spacetime -p 0.0.0.0:3000:3000 "$IMG" spacetime start
+docker run -d --name arcane-bench-spacetime --ulimit nofile=65536:65536 -p 0.0.0.0:3000:3000 "$IMG" spacetime start
 
 # Wait for port 3000
 for i in $(seq 1 120); do bash -c "echo >/dev/tcp/127.0.0.1/3000" 2>/dev/null && break; sleep 2; done
@@ -89,6 +89,7 @@ OUT_DIR="/var/arcane-benchmark-out"
 rm -rf "$OUT_DIR" && mkdir -p "$OUT_DIR"
 
 docker run --rm \
+  --ulimit nofile=65536:65536 \
   -v "$OUT_DIR:/var/benchmark/out" \
   "$IMG" run-benchmark \
     --config "$CONFIG_PATH" \
