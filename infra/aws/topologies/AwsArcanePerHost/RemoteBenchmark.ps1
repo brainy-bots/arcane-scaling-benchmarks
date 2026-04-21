@@ -106,6 +106,7 @@ for i in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 5; done
 docker pull "$IMG"
 docker rm -f arcane-bench-manager 2>/dev/null || true
 docker run -d --name arcane-bench-manager --network host \
+  --ulimit nofile=65536:65536 \
   -e MANAGER_HTTP_PORT=8081 \
   -e MANAGER_CLUSTERS="__MC__" \
   "$IMG" arcane-manager
@@ -140,7 +141,12 @@ IMG="__IMG__"
 for i in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 5; done
 docker pull "$IMG"
 docker rm -f arcane-bench-cluster 2>/dev/null || true
+# --ulimit nofile lifts the container's file-descriptor ceiling above the
+# host default (1024) so the cluster's accept loop doesn't hit EMFILE at
+# roughly one socket per connected client. At 6000-player sweep ceiling ÷
+# 2 clusters, each cluster holds ~3000 client sockets, well under 65536.
 docker run -d --name arcane-bench-cluster --network host \
+  --ulimit nofile=65536:65536 \
   -e CLUSTER_ID="__CLUSTER_ID__" \
   -e REDIS_URL="redis://__REDIS_IP__:6379" \
   -e NEIGHBOR_IDS="__NEIGHBORS__" \
@@ -205,6 +211,7 @@ rm -rf "$OUT_DIR" && mkdir -p "$OUT_DIR"
 
 set +e
 docker run --rm \
+  --ulimit nofile=65536:65536 \
   -v "$OUT_DIR:/var/benchmark/out" \
   "$IMG" run-benchmark \
     --config "$CONFIG_PATH" \
