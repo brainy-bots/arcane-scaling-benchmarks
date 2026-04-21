@@ -48,10 +48,16 @@
   //  fails the pass criteria below (whichever comes first). The ceiling is
   //  the highest tier that passed.
 
-  // First tier (also the step size). Integer >= 1.
-  "SpacetimeStep":        250,
-  // Upper bound on the sweep. Integer >= SpacetimeStep.
-  "SpacetimeMaxPlayers":  2000,
+  // First tier (also the step size). Integer >= 1. Step 50 gives us tier
+  // resolution every 50 players across the saturation region — prior 250-step
+  // runs landed pass=500/fail=750, which is not informative enough to say
+  // whether the real ceiling is 550, 650, or 720.
+  "SpacetimeStep":        50,
+  // Upper bound on the sweep. Integer >= SpacetimeStep. Sized with enough
+  // headroom over the observed ~500–750 saturation band so a step-50 sweep
+  // lands on at least one failing tier without running many wasted tiers past
+  // saturation.
+  "SpacetimeMaxPlayers":  1500,
   // Steady-state measurement window per tier, in seconds. The swarm settles
   // for this long between RESET and REPORT on each tier before pass/fail is
   // computed. Integer >= 1; 30 is the canonical published value.
