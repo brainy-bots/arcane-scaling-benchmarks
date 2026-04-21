@@ -30,6 +30,13 @@ results/last-ssm-invoke.json
 infra/terraform/**/.terraform/
 infra/terraform/**/*.tfstate
 infra/terraform/**/*.tfstate.*
+infra/terraform/**/tfplan*
+# Only the generic `terraform.tfvars` (which Terraform auto-loads) is
+# ignored — the point is that every run selects its topology via
+# `-var-file=<scenario>.tfvars` rather than mutating a shared file in
+# place. Scenario-specific tfvars files (spacetimeonly.tfvars,
+# arcaneperhost.clusters_N.tfvars) are committed and must not be edited
+# per run; add sibling files for new scenarios instead.
 infra/terraform/**/terraform.tfvars
 
 # Pester / test output
