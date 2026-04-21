@@ -18,7 +18,7 @@ Benchmark results (manifests, CSVs, per-node diag captures) live under `results/
 
 ## 2026-04-18 — Session baseline, prior to any fixes
 
-**Setup.** Arcane 2-cluster AWS run using the codebase as it existed before this week's work. Cluster nodes c7i.2xlarge, driver c7i.2xlarge, Redis and SpacetimeDB on t3.large. Config `arcane_plus_spacetimedb.clusters_2.json` (start 1500, step 250, max 6000).
+**Setup.** Arcane 2-cluster AWS run using the codebase as it existed before this week's work. All server-side roles (cluster × 2, Redis, SpacetimeDB, manager) on `t3.large` (2 vCPU burstable, 8 GiB). Driver `c7i.2xlarge` (8 vCPU). Config `arcane_plus_spacetimedb.clusters_2.json` (start 1500, step 250, max 6000). Instance types confirmed by 2026-04-22 CloudTrail audit — earlier journal drafts and the README incorrectly stated cluster nodes were `c7i.2xlarge`; they were never that. Corrected here and everywhere else on 2026-04-22.
 
 **Result.** Ceiling appeared to be 2000. Failure mode looked like ramp-timeout at 2250 players.
 
@@ -38,7 +38,7 @@ Benchmark results (manifests, CSVs, per-node diag captures) live under `results/
 
 **Result.** Run `20260421_070438`. Ceiling moved from 2000 → **3500 players**. Failure mode changed from silent accept-stop to cluster container OOM-kill at 3750 (anon-rss 6.5 GB on 16 GB instance).
 
-**Interpretation.** The ulimit was the entire reason for the 2000 cap. The true cluster ceiling on c7i.2xlarge is ~1750 clients per cluster (RAM-bound via per-connection state). The earlier "classifier attributed to driver_or_network" was a false signal — there was no CPU saturation anywhere.
+**Interpretation.** The ulimit was the entire reason for the 2000 cap. The true cluster ceiling on `t3.large` (8 GiB) is ~1750 clients per cluster (RAM-bound via per-connection state; 6.5 GB anon-rss on an 8 GB instance). The earlier "classifier attributed to driver_or_network" was a false signal — there was no CPU saturation anywhere.
 
 **Next.** Fix `broadcast_lagged_events` / `bytes_out` observability (arcane#37), multi-thread tokio runtime (arcane#38), per-tier classifier (arcane-scaling-benchmarks#33). These become the substrate for diagnosing future ceilings.
 
@@ -62,7 +62,7 @@ Benchmark results (manifests, CSVs, per-node diag captures) live under `results/
 
 **Hypothesis.** On the new metric, what's the SpacetimeDB-only single-node ceiling?
 
-**Setup.** Config `spacetimedb_only.wide.json` (step 250, max 6000). AwsSpacetimeOnly topology: one c7i.2xlarge for SpacetimeDB + one c7i.2xlarge for driver. Image `dev-20260421-stdb-wide`. Run `20260421_151956`.
+**Setup.** Config `spacetimedb_only.wide.json` (step 250, max 6000). AwsSpacetimeOnly topology: one `t3.large` for SpacetimeDB (same box class every other server role uses) + one `c7i.2xlarge` for driver. Image `dev-20260421-stdb-wide`. Run `20260421_151956`.
 
 **Result.** Ceiling **1750 players** at ~51 ms latency. Server became unreachable at 2000 (SpacetimeDB hit its single-node cap; failure mode: connection refused, not latency climb).
 
@@ -74,9 +74,9 @@ Benchmark results (manifests, CSVs, per-node diag captures) live under `results/
 
 **Setup.** Config `arcane_plus_spacetimedb.clusters_2.json`, 4 clusters of... wait, 2 clusters. Image `dev-20260421-client-lat`. Run `20260421_145648` (third attempt after two transient AWS retries).
 
-**Result.** Ceiling **3500 players** at ~50 ms. Failure mode: cluster 1 OOM-killed at 3750 (anon-rss 6.5 GB on 16 GB c7i.2xlarge).
+**Result.** Ceiling **3500 players** at ~50 ms. Failure mode: cluster 1 OOM-killed at 3750 (anon-rss 6.5 GB on 8 GiB `t3.large`).
 
-**Interpretation.** At N=2, per-cluster workload is bound by RAM: each cluster holds roughly the full world's entities (own + one neighbor) plus ~1800 local WS connection states. 6.5 GB is the observed cap; beyond ~1800 clients per cluster we OOM. Task #62 tracks a heap-profile investigation.
+**Interpretation.** At N=2, per-cluster workload is bound by RAM: each cluster holds roughly the full world's entities (own + one neighbor) plus ~1800 local WS connection states. 6.5 GB is the observed cap on an 8 GiB `t3.large`; beyond ~1800 clients per cluster we OOM. Task #62 tracks a heap-profile investigation.
 
 ---
 
@@ -86,7 +86,7 @@ Benchmark results (manifests, CSVs, per-node diag captures) live under `results/
 
 **Result.** Ceiling **6000 players** at 126 ms latency. Failure mode: latency gate triggered at 6250 (276 ms). `broadcast_lagged_events = 0` across all four clusters at every passing tier — clean delivery.
 
-**Interpretation.** Near-linear scaling from 2c (3500) → 4c (6000), but with a clear latency-climb shape: ~50 ms at low tiers, rising smoothly to 126 ms at the ceiling. The climb reflects full-mesh replication cost growing per-cluster with N (each of 4 clusters receives 3 neighbors' state vs 1 neighbor at N=2). RAM is no longer binding (per-cluster local count dropped from ~1800 to ~1500); CPU is now the proximate limit.
+**Interpretation.** Near-linear scaling from 2c (3500) → 4c (6000), but with a clear latency-climb shape: ~50 ms at low tiers, rising smoothly to 126 ms at the ceiling. The climb reflects full-mesh replication cost growing per-cluster with N (each of 4 clusters receives 3 neighbors' state vs 1 neighbor at N=2). RAM is no longer binding (per-cluster local count dropped from ~1800 to ~1500); per-cluster CPU — only 2 vCPU on `t3.large`, further constrained by the burstable CPU-credit economy under sustained load — is now the proximate limit.
 
 **Next.** Try 6-cluster to see whether scaling continues linearly or the full-mesh tax bends the curve.
 
@@ -122,7 +122,7 @@ Benchmark results (manifests, CSVs, per-node diag captures) live under `results/
 
 ## 2026-04-22 — Parallel pre-encoding (bounded to num_cpus/2)
 
-**Hypothesis.** Bounding the rayon pool to half the node's cores (4 on c7i.2xlarge) leaves the other half reliably available for tokio subscriber tasks. Expected: broadcast_lagged drops to near-zero, latency stays monotonic, ceiling moves up cleanly.
+**Hypothesis.** Bounding the rayon pool to half the node's cores leaves the other half reliably available for tokio subscriber tasks. Expected: broadcast_lagged drops to near-zero, latency stays monotonic, ceiling moves up cleanly. (Thinking at the time assumed cluster nodes were `c7i.2xlarge` / 8 vCPU, so the bound would be 4 threads. CloudTrail audit on 2026-04-22 showed they were actually `t3.large` / 2 vCPU — `num_cpus/2` on 2 vCPU = 1 thread, i.e. effectively serial. The hypothesis was tested on hardware that could never have distinguished it from the serial baseline.)
 
 **Setup.** arcane#41 (pool sized by `max(1, num_cpus/2)`, `ARCANE_CLUSTER_ENCODE_THREADS` env override). Submodule bumped in arcane-scaling-benchmarks#44. Image `dev-20260422-bounded-rayon`. Config `clusters_4`. Run `20260422_010033`.
 
@@ -140,7 +140,36 @@ Revised mechanism: **the driver's TCP recv buffer fills because its tokio tasks 
 
 If this is right, the "cluster ceiling" numbers from 4c onward have been partly **driver-limited**, not cluster-limited. The real cluster capability could be significantly higher on identical hardware.
 
-**Next.** Verify the hypothesis by lifting the driver bottleneck only, not changing cluster hardware. Upgrade the driver-only instance to c7i.4xlarge (double the cores: 16 vCPU), keep cluster nodes at c7i.2xlarge. If latency stays flat at the floor and `broadcast_lagged` drops to near-zero, the hypothesis is confirmed and our published ceiling numbers have been artificially low on the Arcane side. This is a ~5-minute terraform change and ~$1 of EC2.
+**Next.** Verify the hypothesis by lifting the driver bottleneck only, not changing cluster hardware. Upgrade the driver-only instance to `c7i.4xlarge` (double the cores: 16 vCPU), keep cluster nodes at `t3.large`. If latency stays flat at the floor and `broadcast_lagged` drops to near-zero, the hypothesis is confirmed and our published ceiling numbers have been artificially low on the Arcane side. This is a ~5-minute terraform change and ~$1 of EC2.
+
+---
+
+## 2026-04-22 — Hardware audit: cluster nodes were `t3.large`, not `c7i.2xlarge`
+
+**Trigger.** While preparing the driver-upsize tfvars I noticed the committed `arcaneperhost.clusters_*.tfvars` set `data_instance_type = "t3.large"` for every server-side role. The README and the first draft of this journal claimed cluster nodes were `c7i.2xlarge`. Couldn't reconcile the two — asked: what actually ran?
+
+**Audit.** AWS CloudTrail `RunInstances` events for 2026-04-21, filtered by `ArcaneBenchmarkRole` tag, covering every benchmark apply that day (SpacetimeDB-only runs at 09:23, 11:20, 12:19 UTC; Arcane runs at 11:48, 12:50, 16:31, 19:41, 21:54 UTC). Every single server-side instance — SpacetimeDB, every Arcane cluster, manager, Redis — was `t3.large`. Only the driver was `c7i.2xlarge`.
+
+**What this changes about the story.**
+
+- **The comparison is actually fairer than we described.** Both backends ran on identical per-node hardware (`t3.large`, 2 vCPU burstable, 8 GiB). Per-node efficiency is directly comparable without an instance-class wrinkle. The driver is oversized (8 vCPU `c7i.2xlarge`) specifically so it doesn't cap the test.
+- **The 6.5 GB OOM fits `t3.large` exactly** (8 GiB instance).
+- **`t3.large` is burstable.** Sustained CPU above the 30% baseline draws from a finite credit pool; under default `unlimited` mode you pay for burst but don't throttle. This is an uncontrolled knob in all results so far and needs to be either (a) switched to `standard` mode (throttling would become visible) or (b) acknowledged in methodology notes. Added to followup list.
+- **The bounded-rayon experiment from 2026-04-22 was almost vacuous by arithmetic.** `num_cpus/2` on 2 vCPU is 1 thread = serial. Parallel pre-encoding was always going to be compute-identical to serial on `t3.large`; the only place rayon could have helped was if scheduling overhead differed meaningfully, and it didn't. Rayon deserves a real test on a multi-vCPU box before being declared unhelpful — the current data only falsifies "unbounded rayon helps on 2 vCPU," not "parallel pre-encoding helps in general."
+- **The driver-CPU-saturation hypothesis is still worth testing.** Driver is 8 vCPU, diag shows 700-800% CPU use; that's real even independent of cluster hardware. Lifting it to 16 vCPU is still the cheapest next move.
+
+**What this does NOT change.**
+
+- The ceiling numbers themselves (1750 / 3500 / 6000 / 6750) stand. Those are empirical outcomes of the actual runs. Only the *hardware description* attached to them was wrong.
+- The qualitative story stands: SpacetimeDB caps at one node, Arcane scales across four before the full-mesh replication tax asserts itself. The corrected hardware description makes this a cleaner claim, not a weaker one.
+
+**Fixes applied this day.**
+
+- `README.md`: hardware line + "what these numbers say" first bullet rewritten.
+- This journal: every `c7i.2xlarge` reference that described cluster/SpacetimeDB hardware corrected to `t3.large` inline.
+- `arcane/docs/architecture/clustering-system-requirements.md`: benchmark-evidence section + workload→capability examples corrected (separate PR on the arcane repo).
+
+**Next.** Continue with the driver-upsize experiment. Also file a followup to run the parallel-pre-encoding test on cluster nodes with > 2 vCPU — that experiment has not actually been meaningfully performed yet.
 
 ---
 
