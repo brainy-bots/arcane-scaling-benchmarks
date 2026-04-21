@@ -150,6 +150,7 @@ Invoke-Pester -Path ./tests -CI
 
 ## Documentation
 
+- [docs/BENCHMARK_JOURNAL.md](docs/BENCHMARK_JOURNAL.md) — Dated log of every benchmark experiment: hypothesis, setup, result, interpretation, next. Read this to understand how the current numbers came to be, or to avoid re-running dead ends.
 - [REPRODUCIBILITY.md](REPRODUCIBILITY.md) — Full local and cloud setup
 - [docs/WORKLOAD_PARITY.md](docs/WORKLOAD_PARITY.md) — Side-by-side analysis of what each mode computes per tick, proving both do equivalent work
 - [docs/BENCHMARK_SCOPE_AND_PHYSICS.md](docs/BENCHMARK_SCOPE_AND_PHYSICS.md) — What's measured and what's not
