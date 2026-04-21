@@ -42,6 +42,34 @@ Two modes run the **same game logic** (physics, collision detection, buffs, inve
 
 **Pass:** error rate < 1%, average latency < 200 ms. **Ceiling:** highest player count that passes.
 
+**Latency** is measured as *client-perceived latency*: the wall-clock gap between a player's outbound write and the moment the same player's own entity state is reflected back by the server (via Arcane's broadcast frame or SpacetimeDB's `on_update` subscription). Not reducer round-trip time. Not enqueue time. See [REPRODUCIBILITY.md → "What the benchmark actually measures"](REPRODUCIBILITY.md#what-the-benchmark-actually-measures) for why this quantity specifically.
+
+## Current results
+
+Runs on AWS, same hardware class for every scenario (c7i.2xlarge for cluster nodes and driver, t3.large for Redis and SpacetimeDB). Full artifacts (manifests, CSV, per-node diag logs) under `results/runs/AwsArcanePerHost/` and `results/runs/AwsSpacetimeOnly/`. Reproduce with the commands in the [Reproduce on AWS](#reproduce-on-aws) section.
+
+| Scenario | Ceiling (200 ms gate) | Latency at ceiling | Latency at 500 players | Failure mode at next tier |
+|---|---|---|---|---|
+| **SpacetimeDB-only** (1 node) | 1750 players | 51 ms | 50 ms (flat) | server unreachable at 2000 |
+| **Arcane — 2 clusters** | 3500 players | 50 ms | 50 ms (flat) | cluster container OOM at 3750 |
+| **Arcane — 4 clusters** | 6000 players | 126 ms | 51 ms (climbing) | latency gate at 6250 (276 ms) |
+| **Arcane — 6 clusters** | 6750 players | 196 ms | 51 ms (climbing faster) | latency gate at 7000 (488 ms) |
+
+The ~50 ms latency floor is structural to the 10 Hz tick rate (roughly half the tick period on average) — it's what a real game client experiences, not a backend-specific number. Both backends floor at the same value.
+
+### What these numbers say
+
+- **At equivalent hardware cost-per-dollar**, Arcane 4c (~2300 players / $ / hr) and SpacetimeDB 1n (~2273 players / $ / hr) are within 1% of each other. Arcane isn't winning by spending more; it's winning by *being able to* spend more on hardware that SpacetimeDB's architecture cannot use.
+- **Arcane scales horizontally past SpacetimeDB's architectural ceiling.** SpacetimeDB's single-node design caps it where one node can handle; adding servers doesn't help. Arcane's cluster design keeps adding capacity as clusters are added — up to the current full-mesh replication wall.
+- **Diminishing returns past ~4 clusters** under today's full-mesh workload. Per-cluster per-tick CPU is O(P) in total world entity count regardless of N, because every cluster still replicates with every other cluster. 2c → 4c nearly doubles ceiling; 4c → 6c adds only 12%. This is the empirical argument for the affinity-clustering and parallel-pre-encoding work on the roadmap — both lift the O(P) wall by different means.
+- **At a 100 ms latency gate** (more characteristic of competitive game-playability than the published 200 ms bar), the ordering shifts: 2c = 3500, 4c = 5750, **6c = 4000** — past the sweet spot, adding clusters *actively hurts* under the current workload. Latency climbs with cluster count because the full-mesh replication tax grows faster than the local-client workload shrinks. Fixed by affinity clustering (partial-mesh by interaction probability) and parallel pre-encoding (distributes the O(P) encode work across cluster cores).
+
+### Next benchmarks on the roadmap
+
+- Rerun 4c and 6c with **parallel pre-encoding** (arcane task #67). Expected: ceilings move up, latency-climb shape flattens.
+- **Bigger-instance benchmark** (c7i.4xlarge × 4): validates vertical-scale of cluster capability slots per `clustering-system-requirements.md`.
+- **SpacetimeDB on bigger instance** (c7i.4xlarge, c7i.8xlarge): establishes SpacetimeDB's true vertical-scale ceiling for the "where SpacetimeDB's architectural wall actually sits" comparison.
+
 ## Project structure
 
 ```
