@@ -789,6 +789,52 @@ function Run-Scenario-Arcane {
           -f $ramp.FinalTotal, $players, $ramp.ElapsedSec, $ramp.Ready) -ForegroundColor DarkGray
       if (-not $ramp.Ready) {
         Write-Host ("    [invalid] tier players=$players RAMP FAILED: $($ramp.Detail)") -ForegroundColor Yellow
+        # Take a final snapshot so the failed tier carries the same saturation
+        # counters the pass path records, then classify the most-overloaded
+        # component. This is how ramp-timeout tiers get attribution.
+        $rampSnapshots = @()
+        for ($i = 0; $i -lt $clusterHostsForRamp.Count; $i++) {
+          $ch = $clusterHostsForRamp[$i]
+          $wsPort = $ArcaneClusterBasePort + ($i * $ArcaneClusterPortStride)
+          $statsPort = $wsPort + 1
+          $json = Get-ArcaneClusterStatsJson -ClusterHost $ch -ClusterStatsPort $statsPort -TimeoutSec 5
+          if ($null -eq $json) {
+            $rampSnapshots += [PSCustomObject]@{ cluster_index = $i; host = $ch; stats_port = $statsPort; reachable = $false }
+          } else {
+            $rampSnapshots += [PSCustomObject]@{
+              cluster_index           = $i
+              host                    = $ch
+              stats_port              = $statsPort
+              reachable               = $true
+              entities_current        = [int64]$json.entities_current
+              msgs_player_state       = [int64]$json.msgs_player_state
+              msgs_game_action        = [int64]$json.msgs_game_action
+              parse_failures          = [int64]$json.parse_failures
+              bytes_in                = [int64]$json.bytes_in
+              bytes_out               = if ($null -ne $json.bytes_out) { [int64]$json.bytes_out } else { 0 }
+              broadcast_lagged_events = if ($null -ne $json.broadcast_lagged_events) { [int64]$json.broadcast_lagged_events } else { 0 }
+              broadcast_lagged_frames = if ($null -ne $json.broadcast_lagged_frames) { [int64]$json.broadcast_lagged_frames } else { 0 }
+              ws_send_errors          = if ($null -ne $json.ws_send_errors) { [int64]$json.ws_send_errors } else { 0 }
+              ws_accepts              = [int64]$json.ws_accepts
+              tick                    = [int64]$json.tick
+              last_tick_us            = [int64]$json.last_tick_us
+            }
+          }
+        }
+        $worstLagged = 0; $worstLaggedIdx = -1; $worstSendErr = 0; $worstSendErrIdx = -1
+        foreach ($snap in $rampSnapshots) {
+          if (-not $snap.reachable) { continue }
+          if ($snap.broadcast_lagged_events -gt $worstLagged) { $worstLagged = $snap.broadcast_lagged_events; $worstLaggedIdx = $snap.cluster_index }
+          if ($snap.ws_send_errors -gt $worstSendErr) { $worstSendErr = $snap.ws_send_errors; $worstSendErrIdx = $snap.cluster_index }
+        }
+        $mostOverloaded = if ($worstLagged -gt 0) {
+          "cluster[$worstLaggedIdx]:broadcast_lagged=$worstLagged"
+        } elseif ($worstSendErr -gt 0) {
+          "cluster[$worstSendErrIdx]:ws_send_errors=$worstSendErr"
+        } else {
+          'driver_or_network (cluster counters clean; check swarm stderr drv_cpu)'
+        }
+        Write-Host "    [invalid] ramp-timeout most_overloaded=$mostOverloaded" -ForegroundColor Yellow
         $script:ArcaneRunEvidence += [PSCustomObject]@{
           num_servers               = $NumServers
           players                   = $players
@@ -797,6 +843,8 @@ function Run-Scenario-Arcane {
           cluster_entities_required = [int][Math]::Ceiling($players * $ArcaneRampReachedRatio)
           tier_valid                = $false
           validity_reason           = "ramp timeout: $($ramp.Detail)"
+          most_overloaded           = $mostOverloaded
+          cluster_stats             = $rampSnapshots
         }
         break
       }
@@ -814,6 +862,11 @@ function Run-Scenario-Arcane {
       $entitiesObserved = 0
       $statsPollOk = $true
       $statsDetail = @()
+      # Full /stats snapshot per cluster, preserved on the evidence record so a
+      # post-mortem can attribute a tier failure to a specific saturation mode
+      # (broadcast fan-out lag, WS egress errors, inbound message drops, etc.)
+      # instead of only the ramp-timeout symptom.
+      $clusterStatsSnapshots = @()
       for ($i = 0; $i -lt $NumServers; $i++) {
         $ch = if ($ArcaneClusterHosts.Count -eq 0) { '127.0.0.1' } else { $ArcaneClusterHosts[$i] }
         $wsPort = $ArcaneClusterBasePort + ($i * $ArcaneClusterPortStride)
@@ -822,9 +875,33 @@ function Run-Scenario-Arcane {
         if ($null -eq $json) {
           $statsPollOk = $false
           $statsDetail += "cluster[$i] $ch`:$statsPort UNREACHABLE"
+          $clusterStatsSnapshots += [PSCustomObject]@{
+            cluster_index = $i
+            host          = $ch
+            stats_port    = $statsPort
+            reachable     = $false
+          }
         } else {
           $entitiesObserved += [int]$json.entities_current
           $statsDetail += "cluster[$i] $ch`:$statsPort entities=$($json.entities_current) msgs_ps=$($json.msgs_player_state) parse_fail=$($json.parse_failures)"
+          $clusterStatsSnapshots += [PSCustomObject]@{
+            cluster_index           = $i
+            host                    = $ch
+            stats_port              = $statsPort
+            reachable               = $true
+            entities_current        = [int64]$json.entities_current
+            msgs_player_state       = [int64]$json.msgs_player_state
+            msgs_game_action        = [int64]$json.msgs_game_action
+            parse_failures          = [int64]$json.parse_failures
+            bytes_in                = [int64]$json.bytes_in
+            bytes_out               = if ($null -ne $json.bytes_out) { [int64]$json.bytes_out } else { 0 }
+            broadcast_lagged_events = if ($null -ne $json.broadcast_lagged_events) { [int64]$json.broadcast_lagged_events } else { 0 }
+            broadcast_lagged_frames = if ($null -ne $json.broadcast_lagged_frames) { [int64]$json.broadcast_lagged_frames } else { 0 }
+            ws_send_errors          = if ($null -ne $json.ws_send_errors) { [int64]$json.ws_send_errors } else { 0 }
+            ws_accepts              = [int64]$json.ws_accepts
+            tick                    = [int64]$json.tick
+            last_tick_us            = [int64]$json.last_tick_us
+          }
         }
       }
       $required = [int][Math]::Ceiling($players * $ArcaneEntityObservedRatioMin)
@@ -841,6 +918,41 @@ function Run-Scenario-Arcane {
       Write-Host ("    [evidence] cluster_entities_observed={0} required>={1} valid={2}" `
           -f $observedForLog, $required, $tierValid) -ForegroundColor DarkGray
 
+      # Name the most-overloaded component so a failing tier points at a
+      # specific suspect instead of only reporting the ramp-timeout symptom.
+      # Cluster-side signals we can see from the driver are the /stats saturation
+      # counters (lag + WS send errors). Driver-side CPU is captured as
+      # per-second `[driver]` lines in the swarm stderr log; if the cluster
+      # counters are clean, the inference is "driver or network" and the
+      # caller is pointed at the swarm stderr for the drv_cpu timeline.
+      $mostOverloaded = 'unknown'
+      if (-not $tierValid) {
+        $worstLagged = 0
+        $worstSendErr = 0
+        $worstLaggedIdx = -1
+        $worstSendErrIdx = -1
+        foreach ($snap in $clusterStatsSnapshots) {
+          if (-not $snap.reachable) { continue }
+          if ($snap.broadcast_lagged_events -gt $worstLagged) {
+            $worstLagged = $snap.broadcast_lagged_events
+            $worstLaggedIdx = $snap.cluster_index
+          }
+          if ($snap.ws_send_errors -gt $worstSendErr) {
+            $worstSendErr = $snap.ws_send_errors
+            $worstSendErrIdx = $snap.cluster_index
+          }
+        }
+        if ($worstLagged -gt 0) {
+          $mostOverloaded = "cluster[$worstLaggedIdx]:broadcast_lagged=$worstLagged"
+        } elseif ($worstSendErr -gt 0) {
+          $mostOverloaded = "cluster[$worstSendErrIdx]:ws_send_errors=$worstSendErr"
+        } elseif (-not $statsPollOk) {
+          $mostOverloaded = 'cluster:unreachable'
+        } else {
+          $mostOverloaded = 'driver_or_network (cluster counters clean; check swarm stderr drv_cpu)'
+        }
+      }
+
       $script:ArcaneRunEvidence += [PSCustomObject]@{
         num_servers               = $NumServers
         players                   = $players
@@ -849,9 +961,11 @@ function Run-Scenario-Arcane {
         cluster_entities_required = $required
         tier_valid                = $tierValid
         validity_reason           = $validityReason
+        most_overloaded           = $mostOverloaded
+        cluster_stats             = $clusterStatsSnapshots
       }
       if (-not $tierValid) {
-        Write-Host ("    [invalid] tier players=$players FAILED validity: $validityReason") -ForegroundColor Yellow
+        Write-Host ("    [invalid] tier players=$players FAILED validity: $validityReason most_overloaded=$mostOverloaded") -ForegroundColor Yellow
         break
       }
 
@@ -1099,7 +1213,7 @@ function Export-ArcaneRunManifest {
   }
 
   $manifest = [ordered]@{
-    schema_version    = 5
+    schema_version    = 6
     scenario          = 'arcane_plus_spacetimedb'
     run_started_utc   = $StartedUtc.ToString('o')
     run_finished_utc  = $FinishedUtc.ToString('o')
@@ -1445,7 +1559,10 @@ function Invoke-ArcaneScenarioRun {
     $arcaneInvalid = @($script:ArcaneRunEvidence | Where-Object { -not $_.tier_valid })
     if ($arcaneInvalid.Count -gt 0) {
       Write-Host "`n!!! INVALID ARCANE RUN !!! $($arcaneInvalid.Count) tier(s) failed server-side evidence check." -ForegroundColor Red
-      foreach ($t in $arcaneInvalid) { Write-Host ("  - num_servers=$($t.num_servers) players=$($t.players): $($t.validity_reason)") -ForegroundColor Red }
+      foreach ($t in $arcaneInvalid) {
+        $mo = if ($t.PSObject.Properties['most_overloaded']) { " most_overloaded=$($t.most_overloaded)" } else { '' }
+        Write-Host ("  - num_servers=$($t.num_servers) players=$($t.players): $($t.validity_reason)$mo") -ForegroundColor Red
+      }
       Write-Host '  Ceiling numbers below are swarm-side only and MUST NOT be treated as a saturation measurement.' -ForegroundColor Red
     }
 
