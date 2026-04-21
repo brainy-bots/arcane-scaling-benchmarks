@@ -80,14 +80,25 @@
   //  adding ArcaneCeilingStep each tier, until it reaches
   //  ArcaneCeilingMaxPlayers OR a tier fails the pass criteria below.
 
-  // First tier. Integer >= 1.
-  "ArcaneCeilingStartPlayers": 1500,
+  // First tier. Integer >= 1. Set below the SpacetimeDB-only ceiling (500) so
+  // the first few Arcane tiers are head-to-head comparable and give us data
+  // points before we exit the range SpacetimeDB cleared on its own.
+  "ArcaneCeilingStartPlayers": 500,
   // Step size between tiers. Integer >= 1.
   "ArcaneCeilingStep":         250,
   // Upper bound on the sweep. Integer >= ArcaneCeilingStartPlayers.
   "ArcaneCeilingMaxPlayers":   6000,
   // Steady-state measurement window per tier, in seconds. Integer >= 1; 30 is canonical.
   "DurationSeconds":           30,
+
+  // ── validity-gate tuning (rarely changed; see BenchmarkHarnessHelpers.ps1) ─
+  //  The ramp-up gate waits for the clusters' /stats to reflect the swarm's
+  //  declared player count before starting the measurement window. 180 s is
+  //  fine for local runs, but on AWS with ~750 WS connections per c7i.2xlarge
+  //  cluster the ramp empirically needs several minutes at the higher tiers.
+  //  600 s gives room up through ~6000 players without obscuring a real
+  //  saturation point.
+  "ArcaneRampTimeoutSeconds":  600,
 
   // ── persistence (Arcane → SpacetimeDB) ────────────────────────────────────
 
