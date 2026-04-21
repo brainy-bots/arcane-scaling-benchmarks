@@ -1,0 +1,122 @@
+{
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  arcane_plus_spacetimedb — 6-cluster setup.
+  //
+  //  Same scenario as `arcane_plus_spacetimedb.clusters_2.json` but with four
+  //  Arcane cluster processes instead of two. Every canonical workload knob
+  //  (TickRateHz, ActionsPerSec, burst profile, MaxLatencyMs) is identical to
+  //  the 2-cluster config so ceilings are directly comparable.
+  //
+  //  The sweep max is larger here (10000 vs 6000) because we're testing the
+  //  per-cluster-count scaling claim — if linear scaling held we'd expect
+  //  ~7000 at four clusters, and we want headroom to see the real failure
+  //  tier cleanly rather than re-running. See WHY_ARCANE.md pillar #1 on
+  //  affinity clustering: today's cluster runtime uses full-mesh neighbor
+  //  replication via Redis pub/sub, which caps horizontal scaling because
+  //  per-cluster memory is dominated by the union of all clusters' entity
+  //  state, not just the locally-owned slice. This run quantifies how
+  //  sub-linear that is.
+  //
+  //  Comments use JSONC syntax (// line comments). The harness strips them
+  //  before calling ConvertFrom-Json.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+
+  // Dispatch key. Valid: "SpacetimeOnly" | "ArcanePlusSpacetime".
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+
+  // Number of Arcane cluster processes. Must be <= MaxArcaneClusters on the
+  // provisioned Terraform topology — pair with
+  // `arcaneperhost.clusters_6.tfvars`.
+  "ArcaneClusterCount": 6,
+
+  // WASM module the SpacetimeDB server must publish before the driver starts.
+  // Persist-only — clusters own physics, SpacetimeDB only stores snapshots.
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+
+  // Physics implementation used by the cluster's BenchmarkSimulation.
+  // Metadata only — not read by the harness.
+  "PhysicsEngine":      "kinematic",
+
+  // ── connectivity (local defaults; cloud drivers override at runtime) ──────
+
+  "SpacetimeHost":  "http://127.0.0.1:3000",
+  "DatabaseName":   "arcane",
+  "RedisHost":      "127.0.0.1",
+  "RedisPort":      6379,
+
+  // ── Arcane topology (local defaults; cloud drivers override at runtime) ───
+
+  "ArcaneManagerHost": "127.0.0.1",
+  "ArcaneManagerPort": 8081,
+
+  // Per-cluster WebSocket hosts, one entry per cluster (index i = cluster i).
+  // Empty array means "all on localhost" (the local spawn path). Cloud
+  // AwsArcanePerHost topology overrides this with N distinct VPC IPs.
+  "ArcaneClusterHosts": [],
+
+  // Cluster WebSocket port layout. Port for cluster i = ArcaneClusterBasePort + i*Stride.
+  "ArcaneClusterBasePort":   8090,
+  "ArcaneClusterPortStride": 1,
+
+  // When true, the harness assumes manager + clusters are already running
+  // somewhere else (cloud drivers set this; local runs leave false so the
+  // harness spawns them itself).
+  "ArcaneExternalProcesses": false,
+
+  // ── sweep (wider than clusters_2 to find the real 6-cluster ceiling) ──────
+
+  // First tier. Same 500-start as clusters_2 so the low-tier latency lines up
+  // on shared charts.
+  "ArcaneCeilingStartPlayers": 500,
+  // Step size between tiers.
+  "ArcaneCeilingStep":         250,
+  // Upper bound. 10000 gives clean headroom past the ~7000 linear-scaling
+  // expectation — enough to see the real failure tier in one run whether
+  // scaling is linear (expected fail near 7250), sub-linear (fail in the
+  // 4000-6000 range if neighbor replication is the dominant memory cost),
+  // or — worst case — no improvement over 2-cluster (fail at 3750 again).
+  "ArcaneCeilingMaxPlayers":   11000,
+  // Steady-state measurement window per tier, in seconds.
+  "DurationSeconds":           30,
+
+  // ── validity-gate tuning ──────────────────────────────────────────────────
+  //  Same 600 s cap as clusters_2. With 4 clusters × ~2500 clients per cluster
+  //  at high tiers (c7i.2xlarge accepts ~3000/node), the ramp-up has roughly
+  //  the same per-node load as the 2-cluster case at ~1500 per cluster, so
+  //  the 600 s ramp budget carries over without adjustment.
+  "ArcaneRampTimeoutSeconds":  600,
+
+  // ── persistence (Arcane → SpacetimeDB) ────────────────────────────────────
+
+  "SpacetimePersistHz": 1,
+  "PersistBatchSize":   0,
+
+  // ── pass / fail thresholds (canonical — must match clusters_2) ────────────
+  //
+  //  See `arcane_plus_spacetimedb.clusters_2.json` for the full explanation
+  //  of what `lat_avg_ms` actually measures — same mechanism here, same
+  //  threshold.
+
+  "MaxErrRate":     0.01,
+  "MaxLatencyMs":   200,
+
+  // ── swarm client workload (canonical — must match clusters_2) ─────────────
+
+  "TickRateHz":               10,
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+
+  // ── burst profile (canonical — matches clusters_2) ────────────────────────
+
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
+}
