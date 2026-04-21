@@ -112,6 +112,39 @@ See [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md).
 
 ---
 
+## What the benchmark actually measures
+
+Both scenarios report the same four-column workload (`writes/s`, `ok`, `err`, `lat_avg_ms`), and both scenarios measure that latency the same way — **client-perceived latency**, not server-side reducer RTT or client-side enqueue time.
+
+### Why not just time the call?
+
+Both backends are fire-and-forget from the client:
+
+- **Arcane**: the swarm writes a postcard-encoded `PlayerStatePayload` via `WebSocket.send(...)`, which returns as soon as bytes are queued in the local send buffer.
+- **SpacetimeDB**: the swarm calls `conn.reducers.update_player_input(...)`, which returns as soon as the SDK enqueues the reducer message on the persistent WebSocket.
+
+Timing the call site on either backend is meaningless — both complete in microseconds regardless of whether the server is healthy, saturated, or gone. Previous revisions of the harness wrapped these calls with `Instant::now()` / `elapsed()` and reported the result as "latency." The resulting numbers were dominated by local memcpy time and did not move under server load, which is why prior ceiling measurements had to lean on side-channel validity gates (entity counts on SpacetimeDB, `/stats` poll on Arcane) rather than trust the latency column.
+
+### What `lat_avg_ms` now means
+
+The swarm measures the wall-clock gap between a player's outbound write and the moment that same player's own entity state comes back from the server:
+
+- **Arcane**: the swarm decodes every incoming binary broadcast frame (`arcane_wire::decode_server`), scans `DeltaPayload::updated` for its own `entity_id`, and on first hit records `now - last_send` as a latency sample.
+- **SpacetimeDB**: the swarm subscribes to the `entity` table (a spatial box around each player's starting position, plus the player's own row unconditionally), registers `on_update(Entity)`, and on every invocation where `new.entity_id == self` records `now - last_send` as a latency sample.
+
+Both paths feed the same `record_ok(Duration)` in `Metrics`, so `lat_avg_ms` in FINAL lines and the CSV is the same quantity on both backends. That number represents **action → world-reflection time** — what a game client actually perceives. Under server load, tick processing slides later, the echo/subscription push arrives late, and the number rises. Under catastrophic load, echoes never arrive and the tier fails via the `NotDelivered` / `Transport` / `ConnectionDrop` counters instead.
+
+### Pass / fail gates
+
+A tier passes iff both:
+
+- `(total_errs / total_calls) < MaxErrRate` (1% budget by default), AND
+- `lat_avg_ms < MaxLatencyMs` (200 ms by default — the game-playability bar)
+
+Comparable across backends by construction: the workload knobs (`TickRateHz`, `ActionsPerSec`, `ReadRateHz`, burst profile) match, the error counters match, and the latency column measures the same physical quantity.
+
+---
+
 ## Comparing with documentation
 
 Compare ceiling lines from the script output or CSVs with **arcane-demos** `docs/SCALING_EXPERIMENT_RESULTS.md`. Hardware and OS will shift exact numbers.

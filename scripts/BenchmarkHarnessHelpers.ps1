@@ -487,6 +487,14 @@ function Send-SwarmCommand([int]$Port, [string]$Line) {
 }
 
 function Parse-SwarmFinal([string] $Text) {
+  # `lat_avg_ms` on the swarm's FINAL line is **client-perceived latency** —
+  # the wall-clock gap between a player's outbound write and the moment that
+  # player's own entity state is echoed back by the server (Arcane broadcast
+  # frame or SpacetimeDB `on_update` subscription). It is NOT the time around
+  # the client's send call — that would be ~0 ms on both backends because
+  # both are fire-and-forget. See REPRODUCIBILITY.md "What the benchmark
+  # actually measures" and arcane_swarm's backends_*.rs for the full detail.
+  # The wire field name is kept for back-compat with historical parsers.
   $re = 'FINAL:\s*players=(\d+)\s+total_calls=(\d+)\s+total_oks=(\d+)\s+total_errs=(\d+)\s+lat_avg_ms=([\d.]+)(?:\s+err_json=(\{.*?\}))?'
   $all = [regex]::Matches($Text, $re)
   if ($all.Count -eq 0) { return $null }
