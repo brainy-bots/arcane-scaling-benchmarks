@@ -1,0 +1,95 @@
+{
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  arcane_plus_spacetimedb — 4-cluster setup, big-fleet sweep.
+  //
+  //  Same scenario as `arcane_plus_spacetimedb.clusters_4.json` but tuned for
+  //  the c7i.2xlarge cluster fleet defined in
+  //  `arcaneperhost.clusters_4.big.tfvars`. Every workload knob (TickRateHz,
+  //  ActionsPerSec, burst profile, MaxLatencyMs) is identical to the t3.large
+  //  config so ceilings are directly comparable.
+  //
+  //  Sweep starts at 5750 — the tier right before the bounded-rayon run on
+  //  t3.large failed at 6000 (run 20260422_010033, ceiling 5750). The point
+  //  of this run is to test whether bounded rayon (arcane#40/#41) actually
+  //  wins when cluster nodes have cores to spare for the rayon pool. The
+  //  low tiers below 5750 are well-characterized on smaller hardware and
+  //  rerunning them here is a waste of EC2 — start at the interesting
+  //  question.
+  //
+  //  Decision rule on this run:
+  //   - If ceiling lifts meaningfully past 6000: bounded-rayon is justified;
+  //     run the full sweep (clusters_2/4/6 on big fleet) for new published
+  //     numbers.
+  //   - If ceiling is at or below 6000: bounded-rayon doesn't help even with
+  //     adequate cores; revert arcane#40/#41.
+  //
+  //  Comments use JSONC syntax (// line comments). The harness strips them
+  //  before calling ConvertFrom-Json.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+  "ArcaneClusterCount": 4,
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+  "PhysicsEngine":      "kinematic",
+
+  // ── connectivity (local defaults; cloud drivers override at runtime) ──────
+
+  "SpacetimeHost":  "http://127.0.0.1:3000",
+  "DatabaseName":   "arcane",
+  "RedisHost":      "127.0.0.1",
+  "RedisPort":      6379,
+
+  // ── Arcane topology (local defaults; cloud drivers override at runtime) ───
+
+  "ArcaneManagerHost": "127.0.0.1",
+  "ArcaneManagerPort": 8081,
+  "ArcaneClusterHosts": [],
+  "ArcaneClusterBasePort":   8090,
+  "ArcaneClusterPortStride": 1,
+  "ArcaneExternalProcesses": false,
+
+  // ── sweep (start at the bounded-rayon t3.large failure boundary) ──────────
+
+  // 5750 = ceiling of bounded-rayon t3.large run (20260422_010033). Step up
+  // from there until failure to find the c7i.2xlarge cluster ceiling.
+  "ArcaneCeilingStartPlayers": 5750,
+  "ArcaneCeilingStep":         250,
+  // Wide upper bound — if the bigger fleet helps a lot we want to see the
+  // real failure tier in one run rather than topping out and re-running.
+  "ArcaneCeilingMaxPlayers":   10000,
+  "DurationSeconds":           30,
+
+  // ── validity-gate tuning ──────────────────────────────────────────────────
+
+  "ArcaneRampTimeoutSeconds":  600,
+
+  // ── persistence (Arcane → SpacetimeDB) ────────────────────────────────────
+
+  "SpacetimePersistHz": 1,
+  "PersistBatchSize":   0,
+
+  // ── pass / fail thresholds (canonical — must match clusters_4.json) ───────
+
+  "MaxErrRate":     0.01,
+  "MaxLatencyMs":   200,
+
+  // ── swarm client workload (canonical — must match clusters_4.json) ────────
+
+  "TickRateHz":               10,
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+
+  // ── burst profile (canonical — matches clusters_4.json) ───────────────────
+
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
+}
