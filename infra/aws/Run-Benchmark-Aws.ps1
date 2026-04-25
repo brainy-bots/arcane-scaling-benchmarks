@@ -36,9 +36,10 @@
   JSON produced by `terraform output -json benchmark_state` (in `infra/terraform/aws_benchmark`).
 
 .PARAMETER ConfigFile
-  Benchmark config JSON (path on your local filesystem, under the benchmark repo). Only configs
-  baked into the image at `/opt/benchmark/configs/` are accepted — to run with a new config, cut a
-  new image tag.
+  Benchmark config JSON (path on your local filesystem, under the benchmark repo). The orchestrator
+  stages the file to S3 at `s3://<bucket>/<prefix>/<env>/<runId>/runtime-config/<filename>` and the
+  driver mounts it into the container at `/opt/benchmark/runtime-configs/<filename>` for this run.
+  No image rebuild is needed to use a new config — just point at the local file.
 
 .PARAMETER ArcaneClusterCount
   If `>= 0`, validated against the topology before SSM and conveyed to Run-Benchmark.ps1 via the
@@ -118,7 +119,10 @@ if (-not $cfgResolved) {
   throw "Config file not found: '$cfgIn' (search: current directory and repo root $repoRootForValidation)."
 }
 $cfgFileName = [System.IO.Path]::GetFileName($cfgResolved)
-$containerConfigPath = "/opt/benchmark/configs/$cfgFileName"
+# Configs are staged to S3 per run and mounted into the container. The path
+# below is where the driver's RemoteBenchmark.ps1 mounts the host-side
+# runtime-config dir; see `docker run -v` in topologies/*/RemoteBenchmark.ps1.
+$containerConfigPath = "/opt/benchmark/runtime-configs/$cfgFileName"
 
 # Build the intent string used for validation (matches the pre-image flow).
 $benchIntentArgs = '-ConfigFile "./configs/{0}"' -f $cfgFileName
@@ -158,6 +162,19 @@ if ([string]::IsNullOrWhiteSpace($img)) {
 $runId = Get-Date -Format 'yyyyMMdd_HHmmss'
 $Region = [string]$state.Region
 
+# Stage the local config to S3 so the driver can pull it at run time. This is
+# the mechanism that lets researchers add new sibling configs without rebuilding
+# the image: the orchestrator uploads, the driver downloads + bind-mounts, and
+# the run's `runtime-config/<filename>` S3 key is the durable record of what
+# config produced the results in the same prefix.
+$s3ConfigKey  = "$prefix/$Environment/$runId/runtime-config/$cfgFileName"
+$s3ConfigUri  = "s3://$bucket/$s3ConfigKey"
+Write-Host "Staging config to $s3ConfigUri ..." -ForegroundColor DarkCyan
+$uploadOut = aws s3 cp $cfgResolved $s3ConfigUri --region $Region 2>&1
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to stage config to S3 (exit $LASTEXITCODE). Output: $uploadOut"
+}
+
 $remoteParams = @{
   State                            = $state
   RunId                            = $runId
@@ -165,11 +182,13 @@ $remoteParams = @{
   ArtifactPrefix                   = $prefix
   BenchmarkImage                   = $img
   ContainerConfigPath              = $containerConfigPath
+  S3ConfigUri                      = $s3ConfigUri
   SsmDriverBenchmarkTimeoutSeconds = $SsmDriverBenchmarkTimeoutSeconds
 }
 
 Write-Host "Run benchmark on existing AWS env. Environment=$Environment RunId=$runId Region=$Region Image=$img" -ForegroundColor Cyan
 Write-Host "Config (in container): $containerConfigPath" -ForegroundColor DarkGray
+Write-Host "Config (S3 source):    $s3ConfigUri" -ForegroundColor DarkGray
 Write-Host "S3 results prefix: s3://$bucket/$prefix/$Environment/$runId/" -ForegroundColor DarkYellow
 Write-Host "SSM driver benchmark timeout: ${SsmDriverBenchmarkTimeoutSeconds}s" -ForegroundColor DarkGray
 
