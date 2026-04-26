@@ -1,0 +1,72 @@
+{
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  spacetimedb_only — SMOKE TEST.
+  //
+  //  Runs a single 200-player tier for 10 seconds against SpacetimeDB-only.
+  //  Sole purpose: validate that the cloud orchestration path (SSM → S3 config
+  //  staging → host bind-mount → container) works end-to-end after the
+  //  runtime-config-mount refactor. NOT a benchmark — too short to measure
+  //  steady-state ceiling. If you want a real ceiling number, use
+  //  `spacetimedb_only.json` (sweep) or `spacetimedb_only.wide.json`.
+  //
+  //  Why this exists as a sibling rather than as inline overrides: the cloud
+  //  harness consumes a config FILE, not CLI sweep parameters. Keeping the
+  //  smoke config as a separate file means anyone validating the architecture
+  //  on a fresh AWS account picks the file by name, not by remembering a
+  //  collection of override flags.
+  //
+  //  Comments use JSONC syntax — the harness strips them before parsing.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+
+  "BenchmarkMode":   "SpacetimeOnly",
+  "SpacetimeModule": "benchmark-spacetimedb-full",
+
+  // ── connectivity (cloud overrides at runtime) ─────────────────────────────
+
+  "SpacetimeHost":   "http://127.0.0.1:3000",
+  "DatabaseName":    "arcane",
+
+  // ── sweep — single tier, no sweep ─────────────────────────────────────────
+  //
+  //  Step == Max means the harness runs exactly one tier at 200 players. We
+  //  pick 200 (not 50) so the run is non-trivially loaded — at 50 players the
+  //  whole pipe runs ~empty and any architecture-level wiring failure could
+  //  be masked by "nothing to do". 10s steady is enough to verify the swarm
+  //  actually connected, exchanged messages, and got latency samples back —
+  //  i.e. that the config-mount path actually fed Run-Benchmark.ps1 the right
+  //  parameters end-to-end.
+
+  "SpacetimeStep":        200,
+  "SpacetimeMaxPlayers":  200,
+  "DurationSeconds":      10,
+
+  // ── pass / fail thresholds — generous, this is a wiring check, not a measurement ──
+  //
+  //  We don't want a borderline-saturated 200-player tier to fail the smoke
+  //  on latency or error rate, because then we can't tell "architecture
+  //  broken" from "tier marginal". Loosen both gates so anything short of
+  //  total wiring failure passes.
+
+  "MaxErrRate":     0.10,
+  "MaxLatencyMs":   1000,
+
+  // ── swarm client workload (canonical — must match real configs) ───────────
+
+  "TickRateHz":               10,
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+
+  // ── burst profile (canonical) ─────────────────────────────────────────────
+
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
+}

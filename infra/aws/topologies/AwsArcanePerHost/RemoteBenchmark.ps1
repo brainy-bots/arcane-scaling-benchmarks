@@ -14,6 +14,7 @@ function Invoke-AwsArcanePerHostRemoteBenchmark {
     [string]$ArtifactPrefix = 'benchmark-aws',
     [Parameter(Mandatory)][string]$BenchmarkImage,
     [Parameter(Mandatory)][string]$ContainerConfigPath,
+    [Parameter(Mandatory)][string]$S3ConfigUri,
     [int]$SsmDriverBenchmarkTimeoutSeconds = 28800
   )
 
@@ -187,6 +188,7 @@ set -euo pipefail
 export PATH="/usr/local/bin:$PATH"
 IMG="__IMG__"
 CONFIG_PATH="__CONFIG_PATH__"
+S3_CONFIG="__S3_CONFIG__"
 S3_DEST="__S3__"
 AWS_REGION="__REGION__"
 REDIS_IP="__REDIS_IP__"
@@ -209,10 +211,19 @@ docker pull "$IMG"
 OUT_DIR="/var/arcane-benchmark-out"
 rm -rf "$OUT_DIR" && mkdir -p "$OUT_DIR"
 
+# Stage the run's config from S3 onto the driver host, then bind-mount it into
+# the container at /opt/benchmark/runtime-configs. Configs are no longer baked
+# into the image; the host orchestrator uploaded the selected file before SSM.
+RUNTIME_CFG_DIR="/var/arcane-benchmark-runtime-config"
+rm -rf "$RUNTIME_CFG_DIR" && mkdir -p "$RUNTIME_CFG_DIR"
+aws s3 cp "$S3_CONFIG" "$RUNTIME_CFG_DIR/" --region "$AWS_REGION" \
+  || { echo "ERROR: failed to download config from $S3_CONFIG"; exit 1; }
+
 set +e
 docker run --rm \
   --ulimit nofile=65536:65536 \
   -v "$OUT_DIR:/var/benchmark/out" \
+  -v "$RUNTIME_CFG_DIR:/opt/benchmark/runtime-configs:ro" \
   "$IMG" run-benchmark \
     --config "$CONFIG_PATH" \
     --spacetime-host "http://${ST_IP}:3000" \
@@ -241,6 +252,7 @@ exit $EC
   $drvScript = $drvTpl.
     Replace('__IMG__',         (Escape-BashDoubleQuoted $BenchmarkImage)).
     Replace('__CONFIG_PATH__', (Escape-BashDoubleQuoted $ContainerConfigPath)).
+    Replace('__S3_CONFIG__',   (Escape-BashDoubleQuoted $S3ConfigUri)).
     Replace('__S3__',          (Escape-BashDoubleQuoted $s3Dest)).
     Replace('__REGION__',      (Escape-BashDoubleQuoted $Region)).
     Replace('__REDIS_IP__',    (Escape-BashDoubleQuoted $redisIp)).

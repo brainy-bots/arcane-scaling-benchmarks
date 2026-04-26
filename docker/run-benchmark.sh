@@ -15,11 +15,16 @@
 # multi-host Arcane runs. Use `--` to separate this wrapper's flags from the
 # PowerShell tail. Local runs don't need any tail args.
 #
-# Mount /var/benchmark/out to persist the run folder outside the container:
-#   docker run -v /host/out:/var/benchmark/out IMG run-benchmark \
-#              --config /opt/benchmark/configs/spacetimedb_only.json \
-#              --spacetime-host http://<spacetime-vpc-ip>:3000 \
-#              --environment AwsSpacetimeOnly
+# Mount /var/benchmark/out to persist the run folder outside the container,
+# and mount the runtime-config dir so the driver can see the config the host
+# orchestrator staged for this run:
+#   docker run \
+#     -v /host/out:/var/benchmark/out \
+#     -v /host/runtime-config:/opt/benchmark/runtime-configs:ro \
+#     IMG run-benchmark \
+#       --config /opt/benchmark/runtime-configs/spacetimedb_only.json \
+#       --spacetime-host http://<spacetime-vpc-ip>:3000 \
+#       --environment AwsSpacetimeOnly
 
 set -euo pipefail
 
@@ -39,7 +44,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$CONFIG" ]; then
-  echo "--config <path> is required (path inside the container, e.g. /opt/benchmark/configs/spacetimedb_only.json)" >&2
+  echo "--config <path> is required (path inside the container, e.g. /opt/benchmark/runtime-configs/spacetimedb_only.json — mount the host runtime-config dir there with -v)" >&2
   exit 2
 fi
 if [ -z "$SPACETIME_HOST" ]; then
