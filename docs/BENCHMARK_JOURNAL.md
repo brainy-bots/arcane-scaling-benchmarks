@@ -340,6 +340,85 @@ The latency-decomposition data agrees: drain-side `drain_avg_ms` stayed at 0.11�
 
 ---
 
+## 2026-04-26 — Velocity-based dead reckoning (arcane#46) → 30 Hz / 200 ms ceiling 6,250 → 8,250 (+32%)
+
+**Hypothesis.** Dead reckoning skips entities whose velocity quantizes identically to last broadcast (issue arcane#46). On the `spread` deterministic-wander workload entities hold velocity for many ticks between turns, so most per-tier broadcasts could shrink substantially — projected 70-90% reduction in broadcast bytes, with corresponding ceiling lift on the NIC-bound system.
+
+**Setup.**
+
+- Image: `ghcr.io/brainy-bots/arcane-benchmark:dev-2026-04-26-deadreckon` (carries arcane#50 = arcane#46 dead-reckoning + everything from the prior `tickderive` image).
+- Same 4× c7i.2xlarge cluster fleet (terraform now defaults clusters to `instance_type` after this PR's TF fix).
+- Config: `arcane_plus_spacetimedb.clusters_4.tick30_lat200.json` — direct head-to-head with Run C (no DR) at the same gate.
+- Run id: `20260426_190419`.
+
+**Result.** Ceiling **8,250 players** at 30 Hz / 200 ms — up from Run C's 6,250 on the identical fleet shape and config. **+32% lift from dead reckoning alone.** Cluster0 stats at run end:
+
+```
+ws_accepts:               2,125  (vs 1,625 Run C)        +31%
+bytes_out:           326,845 MB  (vs 340,844 MB Run C)   −4%
+broadcast_lagged_frames:  8.06M  (vs 10.52M Run C)       −23%
+last_tick_us:            16,167  (out of 33,333 budget)
+```
+
+Bytes-out per cluster stayed roughly flat despite serving 31% more entities — that's the dead-reckoning win in evidence: per-player broadcast volume dropped, freeing bandwidth headroom for additional players. Cluster CPU still fine (`tick_ms` at ~16ms vs 33ms budget); NIC is still the wall, just being used more efficiently.
+
+**Why +32% and not 70-90%.** The `spread` workload doesn't actually hold straight-line velocity for very long. Three sources of velocity-change broadcasts beyond pure straight-line motion:
+
+- Periodic resync at 60-tick cadence (~2s wall-clock at 30 Hz) — every 2 seconds every entity rebroadcasts regardless.
+- Zone events every 30s — converge all players to (2500, 2500), forcing a velocity change on every player simultaneously.
+- Burst windows every 30s × 20% cohort × 10 actions per burst — extra game actions that often nudge velocity.
+
+For a workload where players genuinely walk in straight lines for tens of seconds (e.g. a kinematic open-world MMO), the saving would land closer to the 70-90% projection. For our deterministic-wander, ~32% is the honest number.
+
+**Bottleneck status.** Still cluster outbound NIC. broadcast_lagged_frames=8M means we're still saturating the WS send path; dead reckoning lifted the ceiling because the per-player byte cost dropped, not because we left the NIC regime.
+
+**Updated three-way comparison.**
+
+| Run | Tick | Gate | DR | Ceiling | Notes |
+|---|---|---|---|---|---|
+| A | 20 Hz | 200 ms | off | 9,000 | quantization-only baseline |
+| C | 30 Hz | 200 ms | off | 6,250 | tick-rate cost from A |
+| **D** | **30 Hz** | **200 ms** | **on** | **8,250** | **+32% over C; new MMO publishing headline** |
+| B | 30 Hz | 100 ms | off | 2,250 | tighter gate; B+DR not measured |
+
+**Headline framing.** **8,250 CCU at 30 Hz / 200 ms on 4× c7i.2xlarge with full-mesh replication, no AOI, no time dilation, dead-reckoning enabled.** Direct comparison to incumbent MMOs at 5–20 Hz / 200 ms — Arcane delivers strictly better update cadence at this player count, on commodity hardware, with the architectural option (affinity AOI, arcane#69) still ahead of us.
+
+---
+
+## 2026-04-26 — Realistic-state run (UserDataBytes=100) blocked on wire/cluster JSON contract mismatch
+
+**Hypothesis.** With dead reckoning landed, the realistic-state ceiling at 30 Hz / 200 ms (UserDataBytes=100, ~156 B/entity) becomes the headline shooter-payload number for incumbent comparison.
+
+**Setup.**
+
+- Same image and fleet as Run D.
+- Config: `arcane_plus_spacetimedb.clusters_4.tick30_realistic.json` (`UserDataBytes: 100` + `ClusterTickRateHz: 30` + `MaxLatencyMs: 200`).
+- Run id: `20260426_192523`.
+
+**Result.** **No ceiling — every PLAYER_STATE was rejected.** Cluster0 stats:
+
+```
+ws_accepts:        125
+msgs_player_state: 0
+parse_failures:    680,931
+entities_current:  0
+```
+
+**Bug.** The swarm's `fill_pseudo_user_data` (added in arcane_swarm#14 for arcane-scaling-benchmarks#52) writes raw xorshift64* bytes into the wire's `user_data: Vec<u8>`. The cluster's `entry_from_wire_player_state` calls `serde_json::from_slice(&payload.user_data)` to convert into `EntityStateEntry.user_data: serde_json::Value`. Random bytes aren't valid JSON → `from_slice` errs → the whole frame is treated as a parse failure.
+
+The wire-side documentation called the field "opaque application bytes" but the cluster-side parse contract is JSON-only. The discrepancy was masked by every prior measurement having `user_data_bytes=0` (empty `Vec<u8>` skips the JSON parse path).
+
+**Resolution path (next session).**
+
+- Option A (cheap, in arcane_swarm): wrap the xorshift output in a JSON envelope, e.g. `{"d":"<base64>"}` of N total bytes. Preserves the cluster contract, no schema change, ~10 lines.
+- Option B (architectural, in arcane): make `EntityStateEntry.user_data` opaque `Vec<u8>` end-to-end and remove the JSON parse from `entry_from_wire_player_state`. Larger semantic change touching the L1 persist path that today serializes user_data as JSON to SpacetimeDB.
+
+Option A unblocks measurement immediately. Option B is the cleaner architectural fix and probably the right answer if we're going to publish "realistic per-entity opaque payload" as a benchmark dimension. Both are next-session work.
+
+**Tear-down.** Terraform fleet destroyed at end of session (no $/hr running). Total session spend ~$15-20, well under the $50 budget. Re-provisioning is a single `terraform apply` at the start of the next session.
+
+---
+
 ## What this journal captures vs what it doesn't
 
 **Captures.** The experimental chain — hypothesis, setup, result, interpretation, next. Each entry links to a specific `RunId` for anyone who wants to inspect the raw manifest/CSV/diag logs.
