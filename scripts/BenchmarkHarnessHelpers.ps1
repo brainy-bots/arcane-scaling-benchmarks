@@ -321,6 +321,22 @@ function Merge-ConfigFileParameters {
   if ($cfgHasScalar -and -not $cfgHasArray) {
     Set-Variable -Name 'ArcaneClusterCounts' -Value @([int]$cfg.ArcaneClusterCount) -Scope Script
   }
+
+  # Tick-rate single source of truth: when the config sets ClusterTickRateHz,
+  # the swarm's TickRateHz derives from it so the cluster sees fresh input on
+  # every tick. Otherwise a 30 Hz cluster paired with 10 Hz swarm only refreshes
+  # entity velocity once every 3 cluster ticks — undersupplying the inbound
+  # workload and understating the "30 Hz" claim. Real-game pattern is
+  # client send rate >= server tick rate.
+  #
+  # Escape hatch: configs without ClusterTickRateHz fall through to the
+  # legacy TickRateHz field as before. A config that wants the rates
+  # genuinely decoupled today has to either (a) drop ClusterTickRateHz, or
+  # (b) accept the harness-derived match — we do not currently support
+  # "set both to different values" since it has been a footgun every time.
+  if ($cfg.PSObject.Properties.Name -contains 'ClusterTickRateHz') {
+    Set-Variable -Name 'TickRateHz' -Value ([int]$cfg.ClusterTickRateHz) -Scope Script
+  }
 }
 
 # ──────────────────────────────────────────────────────────────────────────
