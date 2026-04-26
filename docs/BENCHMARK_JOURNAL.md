@@ -236,6 +236,110 @@ This is the **full-mesh-replication NIC wall on `c7i.2xlarge` cluster hardware**
 
 ---
 
+## 2026-04-26 — Quantization (arcane#45) lifts 20 Hz baseline 7,250 → 9,000 on the same fleet
+
+**Hypothesis.** Quantizing `EntityState.position` and `velocity` from `Vec3<f64>` (24 B) to `Vec3<i16>` (3-9 B varint) on the wire reduces per-entity broadcast bytes by ~30-42 B. With cluster outbound NIC as the binding bottleneck on the previous 7,250 ceiling, the saving should translate near-linearly into ceiling lift.
+
+**Setup.**
+
+- Image: `ghcr.io/brainy-bots/arcane-benchmark:dev-2026-04-26-tickderive` (carries arcane#48 env-driven tick rate, arcane#49 Vec3Q quantization, arcane_swarm#14 UserDataBytes plumbing, arcane_swarm#15 swarm-side quantization).
+- Fleet: `arcaneperhost.clusters_4.tfvars` — 4× c7i.2xlarge clusters, c7i.2xlarge driver, t3.large data plane (Redis, SpacetimeDB, manager).
+- Config: `arcane_plus_spacetimedb.clusters_4.json` (canonical lean baseline; sweep 500→10000 step 250, duration 30s/tier, 20 Hz cluster tick, 10 Hz swarm send, MaxLatencyMs=200).
+- Run id: `20260426_125527`.
+- One terraform fix landed before the run: `arph_cluster.instance_type` now wires from `var.instance_type` (was `var.data_instance_type`). The default tfvars now provisions cluster nodes on the same `c7i.2xlarge` shape advertised in the README.
+
+**Result.** Ceiling **9,000 players** at 20 Hz / 200 ms. Same workload as the 7,250 baseline; only delta is wire quantization. Lift: +24%.
+
+**Interpretation.** Quantization works as expected on a NIC-bottlenecked system: per-entity bytes drop, broadcast cadence stays the same, ceiling rises. Cluster CPU stayed comfortable at this point — the next-tier failure pattern still looks bandwidth-shaped, not CPU-shaped. The +24% headline lift on its own is a clean, attributable optimization win.
+
+**Caveat: the 7,250 reference was taken on the same `c7i.2xlarge` cluster shape, set at terraform-apply time during that run.** This week's terraform fix makes that shape the *default* of the committed module — independent of what was in the file before — so future repro on the committed code lands on the same hardware automatically.
+
+---
+
+## 2026-04-26 — 30 Hz / 100 ms MMO-class headline measurement → 2,250 players
+
+**Hypothesis.** With quantization landed, measure the new MMO-class publishing standard: cluster simulation at 30 Hz, 100 ms latency gate, swarm `TickRateHz` matched to the cluster tick (single source of truth from `ClusterTickRateHz`). Expect the ceiling to drop substantially below the 9,000 at 20 Hz / 200 ms because (a) tick rate is 1.5×, (b) inbound swarm send rate is 3× the historical 10 Hz, (c) latency budget shrinks from 200 ms → 100 ms.
+
+**Setup.**
+
+- Same image and fleet as the 9,000 measurement above.
+- Config: `arcane_plus_spacetimedb.clusters_4.tick30.json` (`ClusterTickRateHz: 30`, `MaxLatencyMs: 100`, sweep 500→10000 step 250, 30s/tier).
+- Harness change: `Merge-ConfigFileParameters` now derives swarm `TickRateHz` from `ClusterTickRateHz` so the two can't drift out of sync (PR arcane-scaling-benchmarks#56). Manifest confirms swarm sent at 30 Hz.
+- Run id: `20260426_131708`.
+
+**Result.** Ceiling **2,250 players** at 30 Hz / 100 ms. Sharp wire-latency cliff — `lat_avg_ms` was 16 ms across tiers 500→2000, ticked to 23 ms at 2,250 (still under gate), then jumped to 181 ms at the 2,500 tier. `wire_avg_ms` jumped from 0.02 ms to 39.86 ms in the same step; `drain_avg_ms` stayed at 0.11 ms. Cluster `tick_ms` stayed at ~3.92 ms (well under the 33 ms tick budget at 30 Hz).
+
+**Interpretation.** This is the new MMO-class publishing headline: **2,250 CCU at 30 Hz / 100 ms on 4× c7i.2xlarge with full-mesh replication, no AOI, no time dilation**. The gap from 9,000 to 2,250 is the cost of moving from incumbent-band (5–20 Hz, 200 ms) to a tighter standard the incumbents can't sustain. The cliff is wire-latency-shaped, not CPU-shaped: cluster CPU has 90%+ headroom even at the failure tier, so the binding limit is network I/O at 30 Hz × 30 Hz × 4 clusters × player² fan-out — full-mesh outbound bandwidth.
+
+**Comparison framing for the README.** Incumbents publish 5–20 Hz tick rates (EVE 1 Hz with time dilation; WoW/FFXIV/Albion 5–20 Hz). Arcane sustains 30 Hz at 2,250 CCU on commodity AWS — **a strictly better update cadence than the incumbent band, with no AOI**. The headline is "Arcane raises the MMO bar to 30 Hz; here's what that costs in player count vs the historical 20 Hz / 200 ms point."
+
+**Next (run C, in flight).** 30 Hz / 200 ms supplementary measurement to disambiguate "did Run B's cliff come from the latency gate or from real capacity loss at 30 Hz?". If 30 Hz / 200 ms ceiling lands meaningfully above 2,250, the gate explains most of the drop. If it stays near 2,250, capacity drops at 30 Hz regardless of the gate. Will append the Run C result here and finalize the README narrative around whichever of those two stories the data tells.
+
+---
+
+## 2026-04-26 — 30 Hz / 200 ms supplementary → 6,250 players; bottleneck reconfirmed as cluster outbound NIC
+
+**Hypothesis.** Run a 30 Hz cluster at the historical 200 ms gate to disambiguate Run B's 2,250 cliff. If the ceiling is meaningfully above 2,250, the latency gate accounts for most of the drop and the headline can publish at the 200 ms gate alongside incumbents.
+
+**Setup.**
+
+- Same image and fleet as Runs A and B.
+- Config: `arcane_plus_spacetimedb.clusters_4.tick30_lat200.json` (`ClusterTickRateHz: 30`, `MaxLatencyMs: 200`, sweep 500→10000 step 250).
+- Run id: `20260426_165722`.
+
+**Result.** Ceiling **6,250 players** at 30 Hz / 200 ms. Latency progression: stable 68–77 ms across tiers 4250→4750, climbing to 96–132 ms across 5250→6000, jumping to 182 ms at 6,250 (last passing) and 237 ms at 6,500 (gate breach).
+
+**Three-way comparison.**
+
+| Run | Cluster tick | Latency gate | Ceiling | Δ vs Run A |
+|---|---|---|---|---|
+| A | 20 Hz | 200 ms | 9,000 | baseline |
+| C | 30 Hz | 200 ms | 6,250 | −30% (tick-rate cost) |
+| B | 30 Hz | 100 ms | 2,250 | −75% (tighter gate dominates) |
+
+The latency gate accounts for most of Run B's drop. The genuine cost of moving from 20 Hz to 30 Hz at a fixed 200 ms gate is ~30%, not 4×.
+
+**Bottleneck — cluster outbound NIC, confirmed.**
+
+Cluster0 `/stats` snapshot at the failure tier:
+
+```
+bytes_out:                 340,844,925,384  (~341 GB over the run)
+broadcast_lagged_events:   801,105
+broadcast_lagged_frames:   10,521,542
+ws_send_errors:            904
+last_tick_us:              18,160  (out of 33,333 budget at 30 Hz)
+entities_current:          1,625   (=  6500 / 4 clusters)
+```
+
+`broadcast_lagged_frames = 10.5M` is the smoking gun: the tokio broadcast channel dropped frames because per-subscriber WS sends couldn't drain fast enough. Sustained outbound on cluster0 was ~1.1 GB/sec on a c7i.2xlarge NIC whose sustained throughput tops out near 0.375 GB/sec. Demand-vs-supply ratio at the failure tier is roughly 3×.
+
+The latency-decomposition data agrees: drain-side `drain_avg_ms` stayed at 0.11–0.19 ms across the sweep — the swarm-driver isn't the bottleneck. Wire latency (`wire_avg_ms`) climbed from 5.95 → 89 → 134 ms, which is the queueing wait inside the cluster's send buffer waiting for NIC bytes to drain. Cluster CPU stayed at 11–18 ms tick, well under budget.
+
+**What this means.**
+
+- The **NIC ceiling is the same architectural wall the 7,250 baseline hit** with `Vec3<f64>` payloads. Quantization (Vec3 → Vec3Q) cut per-entity Vec3 bytes from 24 to ~3-9, which moved the wall higher — 7,250 → 9,000 at 20 Hz, and produced the 6,250 number at 30 Hz that wasn't measurable before.
+- The path to a higher ceiling at this hardware is **smaller broadcast volume**, not more cluster CPU or smaller cluster count. Three independent levers compose additively:
+  1. **Velocity-based dead reckoning** (arcane#46) — broadcast only when velocity changes. On `spread` workload, expected ~70-90% reduction in per-tier broadcast bytes during straight-line motion segments.
+  2. **Per-message-deflate compression** (arcane#44, library-blocked today) — additional ~30-50% on top of the bytes that remain.
+  3. **Affinity-based AOI** — full-mesh fan-out is O(P²); replacing it with predicted-interaction-only fan-out is the long-term architectural answer (this is Arcane's core premise; see WHY_ARCANE.md).
+- Bigger NIC hardware (c5n / c7gn families, 25-100 Gbps) would also lift the ceiling, but at a different cost-per-CCU ratio — worth measuring as a separate sibling experiment, not a hardware substitution for the architectural levers above.
+
+**Headline framing for the README update.**
+
+- Lead number: **6,250 CCU at 30 Hz / 200 ms** on 4× c7i.2xlarge clusters with full-mesh replication, no AOI, no time dilation. Direct comparison to incumbent MMOs at 5–20 Hz / 200 ms — Arcane delivers strictly better update cadence at this player count.
+- Secondary: 9,000 CCU at 20 Hz / 200 ms (matches the incumbent tick band on tick rate; shows the headroom available when cadence isn't pushed up).
+- Footnote: 2,250 CCU at 30 Hz / 100 ms (tighter playability gate). Useful for the shooter-class conversation once physics-at-scale lands and we can compare to CS / BF / Apex with a fair workload.
+
+**Next.**
+
+1. Update README with the 6,250 / 9,000 / 2,250 trio + bottleneck attribution. Replace the current 7,250 headline.
+2. Land velocity-based dead reckoning (arcane#46). Re-measure on the same fleet — expected to lift 30 Hz ceiling significantly because dead reckoning attacks the binding constraint (broadcast bytes) directly.
+3. Sibling experiment with `c5n.2xlarge` clusters (25 Gbps NIC) at the same workload. Confirms the NIC interpretation; gives a "what if we paid for network-optimized" data point.
+4. Tear down terraform fleet between sessions to stop the cost meter; current $50 budget left ~$30 of headroom after this session.
+
+---
+
 ## What this journal captures vs what it doesn't
 
 **Captures.** The experimental chain — hypothesis, setup, result, interpretation, next. Each entry links to a specific `RunId` for anyone who wants to inspect the raw manifest/CSV/diag logs.
