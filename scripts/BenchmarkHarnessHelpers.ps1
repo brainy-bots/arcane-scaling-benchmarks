@@ -284,11 +284,19 @@ function Merge-ConfigFileParameters {
     'ArcaneRampTimeoutSeconds',
     'ArcaneRampReachedRatio',
     'ArcaneEntityObservedRatioMin',
+    # Per-tick swarm payload size (bytes). 0 = lean baseline. > 0 fills
+    # PlayerStatePayload.user_data with deterministic-but-varied bytes for the
+    # realistic-state benchmark. Arcane backend only.
+    'UserDataBytes',
     # Metadata keys — consumed by the AWS run validator / docs, not by Run-Benchmark.ps1. Accepted here so the
     # same config file works for both the local harness and the AWS-side topology validator.
     'BenchmarkMode',
     'SpacetimeModule',
     'PhysicsEngine',
+    # Cluster simulation tick rate (consumed by AWS orchestrator → cluster
+    # container env BENCHMARK_TICK_RATE_HZ). Accepted here so the validator
+    # tolerates the field.
+    'ClusterTickRateHz',
     # Scalar alias for ArcaneClusterCounts. The AWS validator needs the scalar;
     # the harness runs a sweep over ArcaneClusterCounts. Translated below.
     'ArcaneClusterCount'
@@ -763,6 +771,13 @@ function Run-Scenario-Arcane {
     )
   } else {
     $swarmArgs += @('--burst-disabled')
+  }
+  # UserDataBytes is promoted from the config JSON by Merge-ConfigFileParameters
+  # into script scope; absent ⇒ $null ⇒ [int] coerces to 0 ⇒ no flag added.
+  # Set > 0 in a config to fill the per-tick PLAYER_STATE.user_data with
+  # deterministic bytes for the realistic-state benchmark.
+  if ([int]$UserDataBytes -gt 0) {
+    $swarmArgs += @('--user-data-bytes', [int]$UserDataBytes)
   }
   $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
     -RedirectStandardOutput $stdout `
@@ -1297,6 +1312,14 @@ function Export-ArcaneRunManifest {
         backend                 = 'arcane'
         arcane_manager_base_url = "http://${ArcaneManagerHost}:${ArcaneManagerPort}"
         arcane_manager_cli_flag = '--arcane-manager'
+      }
+      payload = @{
+        # Bytes per PLAYER_STATE.user_data sent to the cluster each tick.
+        # 0 = lean baseline (the historical 7,250-player ceiling). > 0 enables
+        # the realistic-state benchmark (deterministic xorshift bytes via
+        # arcane_swarm protocol::fill_pseudo_user_data).
+        user_data_bytes = [int]$UserDataBytes
+        cli_flag        = '--user-data-bytes'
       }
     }
     arcane_persist    = @{
