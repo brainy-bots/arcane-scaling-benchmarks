@@ -37,9 +37,20 @@ pub const WORLD_MAX: f64 = WORLD_SIZE - 200.0;
 pub const COLLISION_RADIUS: f64 = 50.0;
 pub const COLLISION_DAMAGE: u32 = 10;
 pub const BUFF_SPEED_MULTIPLIER: f64 = 2.0;
-pub const BUFF_DURATION_TICKS: u64 = 200; // 10 seconds at 20 Hz
+/// Buff lasts the same wall-clock duration regardless of cluster tick rate.
+/// Previously hardcoded as `BUFF_DURATION_TICKS = 200` (10s at 20 Hz). Now
+/// derived from `ctx.dt_seconds` per tick so a 30 Hz cluster runs the buff
+/// for 300 ticks and a 60 Hz cluster for 600 ticks — same 10 s on a clock.
+pub const BUFF_DURATION_SECONDS: f64 = 10.0;
 pub const INITIAL_HP: u32 = 100;
 const SPEED_POTION_ITEM: u32 = 0;
+
+/// How many ticks a 10-second speed buff covers at the current tick rate.
+/// `dt_seconds` is the cluster's per-tick interval; at 20 Hz this returns
+/// 200, at 30 Hz it returns 300.
+pub fn buff_duration_ticks(dt_seconds: f64) -> u64 {
+    (BUFF_DURATION_SECONDS / dt_seconds).round() as u64
+}
 
 #[derive(Default, Clone)]
 struct BuffState {
@@ -148,7 +159,7 @@ impl ClusterSimulation for BenchmarkSimulation {
                     if consumed && item_type == SPEED_POTION_ITEM {
                         gs.buff = Some(BuffState {
                             speed_multiplier: BUFF_SPEED_MULTIPLIER,
-                            expires_at_tick: tick + BUFF_DURATION_TICKS,
+                            expires_at_tick: tick + buff_duration_ticks(ctx.dt_seconds),
                         });
                     }
                 }
@@ -377,8 +388,10 @@ mod tests {
         run_tick(&sim, 2, &mut entities, &[use_it]);
         assert!(!entities.get(&id).unwrap().user_data["buff"].is_null());
 
-        // Advance past expiration.
-        run_tick(&sim, 2 + BUFF_DURATION_TICKS + 1, &mut entities, &[]);
+        // Advance past expiration. The test runs at dt = 0.05 (20 Hz) so the
+        // buff covers 200 ticks; the helper makes that explicit.
+        let expiry = 2 + buff_duration_ticks(0.05) + 1;
+        run_tick(&sim, expiry, &mut entities, &[]);
         assert!(entities.get(&id).unwrap().user_data["buff"].is_null());
     }
 

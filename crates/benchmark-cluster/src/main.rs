@@ -57,10 +57,12 @@ fn main() -> Result<(), String> {
 
     let sim = BenchmarkSimulation::new();
 
+    // Buff duration is reported as wall-clock seconds (the user-visible thing),
+    // since the per-tick count varies with the cluster's tick rate.
     eprintln!(
-        "benchmark-cluster: physics=kinematic collision_radius={} buff_duration={}ticks",
+        "benchmark-cluster: physics=kinematic collision_radius={} buff_duration={}s",
         simulation::COLLISION_RADIUS,
-        simulation::BUFF_DURATION_TICKS,
+        simulation::BUFF_DURATION_SECONDS,
     );
 
     cluster_runner::run_cluster_loop(

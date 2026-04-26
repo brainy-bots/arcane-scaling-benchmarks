@@ -14,6 +14,9 @@ function Invoke-AwsSpacetimeOnlyRemoteBenchmark {
     [Parameter(Mandatory)][string]$BenchmarkImage,
     [string]$ContainerConfigPath = '/opt/benchmark/runtime-configs/spacetimedb_only.json',
     [Parameter(Mandatory)][string]$S3ConfigUri,
+    # Accepted for splat compatibility with the AwsArcanePerHost topology;
+    # SpacetimeDB-only mode runs no Arcane cluster, so the value is unused.
+    [int]$ClusterTickRateHz = 20,
     [int]$SsmDriverBenchmarkTimeoutSeconds = 28800
   )
 

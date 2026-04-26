@@ -15,6 +15,7 @@ function Invoke-AwsArcanePerHostRemoteBenchmark {
     [Parameter(Mandatory)][string]$BenchmarkImage,
     [Parameter(Mandatory)][string]$ContainerConfigPath,
     [Parameter(Mandatory)][string]$S3ConfigUri,
+    [int]$ClusterTickRateHz = 20,
     [int]$SsmDriverBenchmarkTimeoutSeconds = 28800
   )
 
@@ -156,16 +157,18 @@ docker run -d --name arcane-bench-cluster --network host \
   -e SPACETIMEDB_DATABASE=arcane \
   -e SPACETIMEDB_PERSIST=1 \
   -e SPACETIMEDB_PERSIST_HZ=1 \
+  -e BENCHMARK_TICK_RATE_HZ="__TICK_RATE_HZ__" \
   "$IMG" benchmark-cluster
 for i in $(seq 1 60); do bash -c "echo >/dev/tcp/127.0.0.1/8090" 2>/dev/null && exit 0; sleep 1; done
 echo "ERROR: cluster WS not listening on 8090"; docker logs arcane-bench-cluster --tail 80 || true; exit 1
 '@
     $clScript = $clTpl.
-      Replace('__IMG__',        (Escape-BashDoubleQuoted $BenchmarkImage)).
-      Replace('__REDIS_IP__',   (Escape-BashDoubleQuoted $redisIp)).
-      Replace('__ST_IP__',      (Escape-BashDoubleQuoted $stIp)).
-      Replace('__CLUSTER_ID__', (Escape-BashDoubleQuoted $cidCluster)).
-      Replace('__NEIGHBORS__',  (Escape-BashDoubleQuoted $neighborLine))
+      Replace('__IMG__',           (Escape-BashDoubleQuoted $BenchmarkImage)).
+      Replace('__REDIS_IP__',      (Escape-BashDoubleQuoted $redisIp)).
+      Replace('__ST_IP__',         (Escape-BashDoubleQuoted $stIp)).
+      Replace('__CLUSTER_ID__',    (Escape-BashDoubleQuoted $cidCluster)).
+      Replace('__NEIGHBORS__',     (Escape-BashDoubleQuoted $neighborLine)).
+      Replace('__TICK_RATE_HZ__',  (Escape-BashDoubleQuoted ([string]$ClusterTickRateHz)))
     $clScript = $clScript -replace "`r`n", "`n"
 
     $instId = $clusterInstIds[$i]

@@ -162,6 +162,23 @@ if ([string]::IsNullOrWhiteSpace($img)) {
 $runId = Get-Date -Format 'yyyyMMdd_HHmmss'
 $Region = [string]$state.Region
 
+# Resolve the cluster simulation tick rate from the config. Optional field —
+# defaults to 20 to preserve historical behavior. The driver passes this to
+# the cluster container as BENCHMARK_TICK_RATE_HZ; the env-driven helper in
+# arcane-infra/tick_rate.rs picks it up. Sibling configs that want a higher
+# headline (e.g. the 30 Hz MMO standard) just set the field.
+. (Join-Path $script:__AwsBenchmarkRepoRoot 'scripts\BenchmarkConfigJsonc.ps1') 2>$null
+if (-not (Get-Command ConvertFrom-BenchmarkConfigJsonc -ErrorAction SilentlyContinue)) {
+  $repoRootForJsonc = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+  . (Join-Path $repoRootForJsonc 'scripts\BenchmarkConfigJsonc.ps1')
+}
+$cfgRaw = Get-Content -Raw -LiteralPath $cfgResolved
+$cfgJson = ConvertFrom-BenchmarkConfigJsonc -Text $cfgRaw
+$clusterTickRateHz = 20
+if ($cfgJson.PSObject.Properties.Name -contains 'ClusterTickRateHz') {
+  $clusterTickRateHz = [int]$cfgJson.ClusterTickRateHz
+}
+
 # Stage the local config to S3 so the driver can pull it at run time. This is
 # the mechanism that lets researchers add new sibling configs without rebuilding
 # the image: the orchestrator uploads, the driver downloads + bind-mounts, and
@@ -183,12 +200,14 @@ $remoteParams = @{
   BenchmarkImage                   = $img
   ContainerConfigPath              = $containerConfigPath
   S3ConfigUri                      = $s3ConfigUri
+  ClusterTickRateHz                = $clusterTickRateHz
   SsmDriverBenchmarkTimeoutSeconds = $SsmDriverBenchmarkTimeoutSeconds
 }
 
 Write-Host "Run benchmark on existing AWS env. Environment=$Environment RunId=$runId Region=$Region Image=$img" -ForegroundColor Cyan
 Write-Host "Config (in container): $containerConfigPath" -ForegroundColor DarkGray
 Write-Host "Config (S3 source):    $s3ConfigUri" -ForegroundColor DarkGray
+Write-Host "Cluster tick rate:     ${clusterTickRateHz} Hz" -ForegroundColor DarkGray
 Write-Host "S3 results prefix: s3://$bucket/$prefix/$Environment/$runId/" -ForegroundColor DarkYellow
 Write-Host "SSM driver benchmark timeout: ${SsmDriverBenchmarkTimeoutSeconds}s" -ForegroundColor DarkGray
 
