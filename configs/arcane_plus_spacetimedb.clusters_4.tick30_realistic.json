@@ -1,11 +1,13 @@
 {
   // ═══════════════════════════════════════════════════════════════════════════
-  //  arcane_plus_spacetimedb — 4-cluster, 30 Hz, 200 ms gate, realistic state.
+  //  arcane_plus_spacetimedb — 4-cluster, 30 Hz, 100 ms gate, realistic state.
   //
-  //  The publishable shooter-payload-at-MMO-tick measurement:
+  //  The publishable shooter-payload-at-MMO-tick measurement at the locked
+  //  30 Hz / 100 ms standard:
   //  - ClusterTickRateHz: 30  → cluster ticks at 30 Hz (above incumbent band)
-  //  - MaxLatencyMs:      200 → incumbent-band playability gate (fair compare)
-  //  - UserDataBytes:     100 → ~156 B/entity broadcasts (vs ~50-60 B lean)
+  //  - MaxLatencyMs:      100 → tighter playability bar than incumbents
+  //  - UserDataBytes:     100 → ~100 B/entity user_data (JSON-envelope wrapped
+  //                              by arcane_swarm#16; cluster requires JSON)
   //
   //  Comments use JSONC syntax — harness strips them before parsing.
   // ═══════════════════════════════════════════════════════════════════════════
@@ -38,7 +40,7 @@
   "PersistBatchSize":   0,
 
   "MaxErrRate":     0.01,
-  "MaxLatencyMs":   200,
+  "MaxLatencyMs":   100,
 
   "ActionsPerSec":            2,
   "ReadRateHz":               5,
