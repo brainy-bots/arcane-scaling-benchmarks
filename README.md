@@ -88,21 +88,57 @@ Most recent run: `results/runs/AwsArcanePerHost/20260426_060905/`. Full artifact
 
 The two variables that most directly drive replication load — **per-entity state size on the wire** and **server tick rate** — are the right axes to compare on. Tick rate is publicly disclosed by most studios. **Per-entity state size is not generally publicly disclosed** for shipped commercial games; community reverse-engineering work suggests typical AAA shooter entities sit in the 80–200 byte range on the wire (Source-engine SDK is the most-studied open reference point), but those are not primary-source numbers and we don't cite them as such here.
 
-| Game / engine | Player cap per server / match | Server tick rate | Per-entity replication state | Visibility | Notable architecture | Source |
-|---|---|---|---|---|---|---|
-| Counter-Strike (Valve official servers) | 10 (5v5) typical | 64 Hz | not publicly disclosed | match-bound, no AOI | dedicated game server | [Valve Source SDK docs — server tickrate](https://developer.valvesoftware.com/wiki/Source_Multiplayer_Networking) |
-| Counter-Strike (FACEIT / tournaments) | 10 | 128 Hz | not publicly disclosed | same | same | [FACEIT support — 128-tick servers](https://support.faceit.com/) |
-| Apex Legends | 60 | 20 Hz | not publicly disclosed | AOI / relevance | dedicated per-match | [Respawn community responses + Battle(non)sense analysis, widely cited 2019–2020](https://www.youtube.com/c/Battlenonsense) |
-| Battlefield 2042 | 128 | 30–60 Hz (platform-dependent) | not publicly disclosed | spatial relevance | dedicated per-match | [DICE — Battlefield 2042 platform specifications](https://www.ea.com/games/battlefield/battlefield-2042) |
-| PlanetSide 2 | up to 2,000 / continent (advertised) | ~25–30 Hz (community-measured) | not publicly disclosed | aggressive AOI; player only sees ~nearest N | continent server cluster | [SOE / Daybreak marketing for continent caps](https://www.planetside2.com/) |
-| Star Citizen | ~100 / server (current target) | game tick ~30 Hz | not publicly disclosed; entity model unusually heavy (multi-subsystem ships, persistent inventory, etc.) | full visibility within shard | working toward "server meshing" (functionally similar to Arcane clustering) | [CIG roadmap and dev updates, 2024–2025](https://robertsspaceindustries.com/roadmap) |
-| EVE Online | up to ~7,548 unique pilots in one battle (B-R5RB, 2014) | nominal ~1 Hz simulation tick within a system | not publicly disclosed | no AOI within a system | single-threaded per system; **time dilation** when load exceeds capacity | [CCP dev blog on TiDi](https://www.eveonline.com/news/view/the-bloodbath-of-b-r5rb), [Eurogamer / Polygon coverage](https://www.eurogamer.net/largest-online-multiplayer-battle-history-eve-online) |
-| **Arcane (this run)** | **7,250 / 4-cluster setup** | **20 Hz** | **56 B (lean — `user_data` empty)** | **Full mesh, no AOI** | **horizontal clustering across commodity AWS** | this repo, run `20260426_060905` |
+| Game / engine | Player cap per server / match | Server tick rate | Per-entity replication state | Server-side physics | Visibility | Notable architecture | Source |
+|---|---|---|---|---|---|---|---|
+| Counter-Strike (Valve official servers) | 10 (5v5) typical | 64 Hz | not publicly disclosed | yes (server-authoritative hit reg + weapon physics) | match-bound, no AOI | dedicated game server | [Valve Source SDK docs — server tickrate](https://developer.valvesoftware.com/wiki/Source_Multiplayer_Networking) |
+| Counter-Strike (FACEIT / tournaments) | 10 | 128 Hz | not publicly disclosed | yes (same) | same | same | [FACEIT support — 128-tick servers](https://support.faceit.com/) |
+| Apex Legends | 60 | 20 Hz | not publicly disclosed | yes (server-authoritative hit detection) | AOI / relevance | dedicated per-match | [Respawn community responses + Battle(non)sense analysis, widely cited 2019–2020](https://www.youtube.com/c/Battlenonsense) |
+| Battlefield 2042 | 128 | 30–60 Hz (platform-dependent) | not publicly disclosed | yes (server runs vehicle dynamics, hit reg, ragdoll) | spatial relevance | dedicated per-match | [DICE — Battlefield 2042 platform specifications](https://www.ea.com/games/battlefield/battlefield-2042) |
+| PlanetSide 2 | up to 2,000 / continent (advertised) | ~25–30 Hz (community-measured) | not publicly disclosed | yes (vehicle + hit reg server-authoritative) | aggressive AOI; player only sees ~nearest N | continent server cluster | [SOE / Daybreak marketing for continent caps](https://www.planetside2.com/) |
+| Star Citizen | ~100 / server (current target) | game tick ~30 Hz | not publicly disclosed; entity model unusually heavy (multi-subsystem ships, persistent inventory, etc.) | yes (heavy — full multi-subsystem ship + character physics on server) | full visibility within shard | working toward "server meshing" (functionally similar to Arcane clustering) | [CIG roadmap and dev updates, 2024–2025](https://robertsspaceindustries.com/roadmap) |
+| World of Warcraft (one realm) | thousands of concurrent players per realm; modern raids / cities use [layering](https://worldofwarcraft.blizzard.com/) to subdivide high-density zones | not publicly disclosed | not publicly disclosed | minimal — server enforces position, ability cast checks; no rigid-body dynamics | aggressive AOI ("nearby" players + raid group) | realm = sharded mega-server with layering | [Blizzard layering announcement](https://worldofwarcraft.blizzard.com/en-us/news/22939231/welcome-to-layering-system) |
+| Foxhole | up to 150+ players per hex (advertised), persistent world | not publicly disclosed | not publicly disclosed | minimal — vehicles use simple kinematics, no rigid-body simulation in heavy fights (community-observed) | spatial / hex-bound | hex-sharded persistent world | [Siege Camp community AMAs and dev posts](https://store.steampowered.com/app/505460/Foxhole/) |
+| EVE Online | up to ~7,548 unique pilots in one battle (B-R5RB, 2014) | nominal ~1 Hz simulation tick within a system | not publicly disclosed | minimal — orbital mechanics + module-resolution, **not** real-time rigid-body physics | no AOI within a system | single-threaded per system; **time dilation** when load exceeds capacity | [CCP dev blog on TiDi](https://www.eveonline.com/news/view/the-bloodbath-of-b-r5rb), [Eurogamer / Polygon coverage](https://www.eurogamer.net/largest-online-multiplayer-battle-history-eve-online) |
+| **Arcane (this run)** | **7,250 / 4-cluster setup** | **20 Hz** | **56 B (lean — `user_data` empty)** | **No real physics — kinematic motion + radius-based collision only** | **Full mesh, no AOI** | **horizontal clustering across commodity AWS** | this repo, run `20260426_060905` |
 
 **On the two replication variables:**
 
 - **Tick rate (frequency):** the load on every link in the pipeline scales linearly. Going from 20 Hz to 30 Hz means 1.5× the broadcasts per second, 1.5× the cluster encode CPU, 1.5× the NIC bandwidth. We sit at the low end of the live-shooter range; a 30 Hz sweep is on the roadmap and is expected to lower the player-count ceiling proportionally.
 - **Per-entity state size:** broadcast bandwidth scales linearly with bytes-per-entity. Going from our 56 B to a more realistic ~140 B (rotation + health + equipment + animation flags packed into `user_data`) is 2.5× the cluster outbound bandwidth, which matters because that's the binding bottleneck today. We expect the realistic-state ceiling to be lower than 7,250 by roughly the bandwidth ratio. That measurement is on the roadmap as a sibling-config experiment.
+
+**On server-side physics — the comparison class for today's number:**
+
+This benchmark runs **kinematic motion** (`position += velocity × dt`) plus **radius-based pairwise collision detection** on the cluster. No rigid-body dynamics, no joint constraints, no raycast hit detection, no vehicle physics, no ragdolls. The cluster's per-tick CPU cost is dominated by entity replication, not by simulation.
+
+That puts the right comparison class for the 7,250-player number at workloads in the **MMORPG / sandbox / persistent-world** family (WoW, EVE Online, Foxhole) — games whose server-side per-entity simulation is also light, where the ceiling is driven by replication and broadcast cost, not by per-frame physics integration. Direct comparison to **AAA shooter** ceilings (Counter-Strike, Battlefield, Apex) is *not* apples-to-apples: those servers run real physics for hit registration and gameplay-critical effects, which adds per-tick CPU cost the benchmark doesn't pay.
+
+Adding real server-side physics is tracked as future work in [arcane#51](https://github.com/brainy-bots/arcane/issues/51) (pluggable PhysicsBackend trait, default Rapier) and [arcane#52](https://github.com/brainy-bots/arcane/issues/52) (Rapier-at-scale capability benchmark). Once those land, a follow-up benchmark sweep against **shooter-class workloads with server physics enabled** will be measured and published in this section. The comparison set will include AAA shooter-class engines (Source / Frostbite / Unreal-Dedicated-class server workloads) where Arcane runs the same physics workload they do — so the resulting numbers are apples-to-apples against the live-shooter player counts at the top of the table. The current 7,250 figure is the **no-physics baseline**; the with-physics measurement will be a separate, lower number meant for direct comparison to shooter-class production servers.
+
+### Cost per concurrent player
+
+Hardware-cost-per-CCU is the metric that keeps numbers comparable as we move across instance classes (`c7i.2xlarge` today, network-optimized `c6in` or `c5n` later, Graviton `c7gn` for ARM-friendly workloads, etc.). What changes across hardware is the absolute ceiling; what *stays* is the dollars-per-CCU-per-hour, which is the production-relevant figure for any studio sizing a deployment.
+
+**This run, AWS on-demand pricing (us-east-1, 2026-04 rates):**
+
+| Role | Instance | Count | $/hr each | Subtotal |
+|---|---|---|---|---|
+| Cluster nodes | c7i.2xlarge | 4 | ~$0.357 | ~$1.43 |
+| SpacetimeDB persistence | c7i.2xlarge | 1 | ~$0.357 | ~$0.36 |
+| Redis | c7i.2xlarge | 1 | ~$0.357 | ~$0.36 |
+| Arcane manager | c7i.2xlarge | 1 | ~$0.357 | ~$0.36 |
+| **Production-fleet total** | | **7** | | **~$2.50/hr** |
+| Swarm driver (test only — not in production fleet) | c7i.2xlarge | 1 | ~$0.357 | excluded |
+
+At 7,250 concurrent players: **~$0.000345 per CCU per hour** ≈ **~$0.34 per 1,000 CCU per hour** ≈ **~$2.49 per 1,000 CCU per session-day** (8 hr).
+
+Translating into industry-relevant units:
+
+- A 60-day average lifetime player playing 1 hr/day costs **~$0.02 in cluster infrastructure** at this density.
+- A persistent shard hosting 7,250 concurrent players continuously, 24/7/365, costs **~$22,000/year** at on-demand pricing. With AWS Reserved Instance or Savings Plan discounts (20–50% for 1–3 year commitments), or Spot pricing for non-critical roles (60–90% off), real production cost lands in the **$5,000–$15,000/year** range for a single 7,250-CCU shard.
+
+**Why this matters for cross-hardware comparison.** When we move to `c6in.2xlarge` or larger network-optimized instances to push the absolute ceiling higher, the per-instance hourly cost goes up but so does the achievable CCU. The right metric to track is whether $/CCU/hr stays roughly flat (good — we're scaling efficiently) or improves (we're getting more density per dollar). Future benchmark runs will report the same `$/CCU/hr` figure alongside the absolute ceiling so the comparison across hardware tiers is honest — a 20,000-player ceiling on $10/hr hardware is a worse $/CCU than today's 7,250 on $2.50/hr if the per-player cost goes up.
+
+This figure also makes Arcane's number directly comparable to shipped games' published infrastructure economics, since per-CCU-per-hour is what studios actually budget against — independent of whether the underlying instance is a c7i, a Hetzner bare-metal box, or a Kubernetes pod.
 
 The comparison Arcane fits into:
 
@@ -128,6 +164,7 @@ This is the **full-mesh replication wall on the current hardware class.** It is 
 
 ### What this number is *not*
 
+- **Not a measurement with real server-side physics.** Cluster simulation is kinematic + radius-collision. Comparable to MMORPG / sandbox / persistent-world workloads, not to AAA shooters that run server-side rigid-body physics for hit registration. Real physics (Rapier as default; pluggable to Chaos / PhysX / Bullet) is on the roadmap; adding it will lower the ceiling.
 - **Not a measurement at AAA-shooter tick rate.** Tick rate is configurable; raising it from 20 Hz toward 30–60 Hz will lower the player-count ceiling. We have not yet run the tick-rate sweep.
 - **Not a measurement at AAA-shooter per-entity state.** The 56 B payload is conservative. Adding rotation + health + equipment + animation flags into `user_data` (~80–100 B more) is a planned sibling experiment.
 - **Not a measurement against AOI / interest-managed visibility.** This is full mesh — every player sees every entity. Most large-player-count shipping games do not run this way; they cull aggressively. Comparing Arcane's full-mesh ceiling to PlanetSide 2's 2,000-player AOI-managed continent isn't apples-to-apples; the workloads differ by 10×–100× in per-cluster fan-out.
