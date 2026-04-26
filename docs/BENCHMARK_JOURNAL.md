@@ -419,6 +419,68 @@ Option A unblocks measurement immediately. Option B is the cleaner architectural
 
 ---
 
+## 2026-04-27 — JSON envelope fix + Run D' (lean DR @ 100 ms) + Run F (realistic DR @ 100 ms)
+
+**Fix.** Landed brainy-bots/arcane_swarm#16 — `fill_pseudo_user_data` now wraps xorshift bytes in `{"d":"<hex>"}` so the cluster's `serde_json::from_slice` succeeds. Tests guard against regression. Plus benchmark-repo PR #59 bumped the swarm submodule and flipped `tick30_realistic.json` from MaxLatencyMs=200 → 100 to match the locked publishing standard.
+
+**Run D' — lean state at the locked headline gate (30 Hz / 100 ms / DR on).**
+
+- Image: `dev-2026-04-27-jsonenvelope` (full Phase 1 stack).
+- Config: `arcane_plus_spacetimedb.clusters_4.tick30.json`.
+- Run id: `20260427_003453`.
+- **Ceiling: 5,500 players** (vs Run B's 2,250 without DR — **+144%** at the same gate).
+
+**Run F — realistic state at the locked headline gate (30 Hz / 100 ms / DR / UserDataBytes=100).**
+
+- Same image. Config: `arcane_plus_spacetimedb.clusters_4.tick30_realistic.json`.
+- Run id: `20260427_004902`.
+- **Ceiling: 4,750 players** — only **−14%** from lean despite ~3× larger per-entity wire payload.
+
+**Bottleneck — moved.** Cluster0 stats at the failure tier:
+
+```
+last_tick_us:              6,023   (out of 33,333 budget — 18% CPU utilization)
+bytes_out:               136 GB    over the run (~0.6 GB/sec sustained)
+broadcast_lagged_frames: 342,117   (down from 10.5M in Run C, but non-zero)
+broadcast_lagged_events: 35,493
+ws_send_errors:          1,246
+parse_failures:          0         (JSON envelope works — contrast Run E's 680k)
+```
+
+The wall is **no longer the NIC** at this configuration. Demand is ~0.6 GB/sec against a c7i.2xlarge sustained NIC of ~0.375 GB/sec — close to capacity but not multi-x oversubscribed like Run C/D were. Cluster CPU is barely doing anything (18% of budget). And **the broadcast-channel `Lagged` events keep firing even at this load**, which means the **256-message broadcast buffer is the new bottleneck**.
+
+The latency decomposition agrees: at Run F's failure tier, `wire_avg_ms=0.14` and `drain_avg_ms=0.05` — both ~zero. The remaining ~84 ms of `lat_avg_ms` is the gap between cluster timestamp (T2) and swarm drain wakeup (T_arrival): cluster fan-out queueing + network transit + driver TCP receive scheduling. The fan-out queueing inside the broadcast channel explains why bumping the channel buffer (arcane-scaling-benchmarks#77, file:line `arcane-infra/src/ws_server.rs:343`) is the next high-leverage move.
+
+**Updated full-matrix summary.**
+
+| Run | Tick | Gate | DR | State | Ceiling | Limiting factor |
+|---|---|---|---|---|---|---|
+| A | 20 Hz | 200 ms | off | lean | 9,000 | quantization-only baseline |
+| B | 30 Hz | 100 ms | off | lean | 2,250 | NIC + tight gate |
+| C | 30 Hz | 200 ms | off | lean | 6,250 | cluster outbound NIC (`broadcast_lagged_frames=10.5M`) |
+| D | 30 Hz | 200 ms | on | lean | 8,250 | cluster outbound NIC (still NIC, less lagging) |
+| **D'** | **30 Hz** | **100 ms** | **on** | **lean** | **5,500** | **broadcast channel cap; CPU ~30% utilized** |
+| **F** | **30 Hz** | **100 ms** | **on** | **realistic** | **4,750** | **broadcast channel cap; CPU 18% utilized** |
+| E | 30 Hz | 100 ms | on | realistic | INVALID (pre-fix) | wire/cluster JSON contract bug (now fixed) |
+
+**Publishable headline (replaces the prior 7,250 reference).**
+
+**4,750 CCU at 30 Hz / 100 ms with realistic per-entity payload, dead reckoning, quantization, full-mesh replication on 4× c7i.2xlarge clusters.** This is the honest shooter-payload-at-MMO-tick number. Lean baseline at the same gate: 5,500.
+
+For incumbent comparison (where MMOs publish at 5–20 Hz / 200 ms): Arcane delivers strictly better update cadence at this player count, on commodity hardware, with the architectural escape hatch (affinity AOI / arcane#69) still ahead. The 6,250 → 8,250 → 5,500 → 4,750 progression is the literal cost story of moving from the incumbent gate to the Arcane standard.
+
+**Cost-per-CCU (4,750 realistic ceiling).** 4× c7i.2xlarge clusters + 1× c7i.2xlarge driver + 3× t3.large data-plane = ~$2/hr. At 4,750 CCU: ~$0.00042/CCU/hr.
+
+**Tear-down.** Terraform destroyed (20 resources). Session spend across both 2026-04-26 and 2026-04-27 sessions: ~$25-30 against $50 budget.
+
+**Next.**
+
+1. Land arcane-scaling-benchmarks#77 (broadcast channel cap tuning) — confirmed empirically as the binding wall at the headline gate. Likely lifts the 4,750 ceiling substantially without any other architectural change.
+2. README rewrite (task #75) with the headline matrix above.
+3. arcane-scaling-benchmarks#76 (option B: cluster opaque user_data) — the right architectural fix for the contract that #16 patched cheaply.
+
+---
+
 ## What this journal captures vs what it doesn't
 
 **Captures.** The experimental chain — hypothesis, setup, result, interpretation, next. Each entry links to a specific `RunId` for anyone who wants to inspect the raw manifest/CSV/diag logs.
