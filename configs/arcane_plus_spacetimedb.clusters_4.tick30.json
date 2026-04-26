@@ -56,9 +56,10 @@
   //  so per-tier comparison is direct. Ceiling tier will likely come earlier
   //  (cluster outbound NIC scales with tick rate × bytes-per-broadcast).
 
-  "ArcaneStep":        500,
-  "ArcaneMaxPlayers":  10000,
-  "DurationSeconds":   60,
+  "ArcaneCeilingStartPlayers": 500,
+  "ArcaneCeilingStep":         250,
+  "ArcaneCeilingMaxPlayers":   10000,
+  "DurationSeconds":           30,
 
   // ── persistence (Arcane → SpacetimeDB) ────────────────────────────────────
 
@@ -75,8 +76,15 @@
   "MaxLatencyMs":   100,
 
   // ── swarm client workload (canonical) ─────────────────────────────────────
+  //
+  //  Note: TickRateHz is intentionally absent from this config. When
+  //  ClusterTickRateHz is set, the harness derives the swarm send rate from
+  //  it (single source of truth — see Merge-ConfigFileParameters in
+  //  scripts/BenchmarkHarnessHelpers.ps1). This avoids the footgun where
+  //  cluster ticks at 30 Hz but swarm sends at 10 Hz, leaving the cluster
+  //  fresh-input-starved every 2 of 3 ticks. Real-game pattern is
+  //  client send rate >= server tick rate.
 
-  "TickRateHz":               10,
   "ActionsPerSec":            2,
   "ReadRateHz":               5,
   "SwarmMode":                "spread",
