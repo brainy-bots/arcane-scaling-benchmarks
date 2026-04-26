@@ -1,0 +1,94 @@
+{
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  arcane_plus_spacetimedb — 4-cluster setup, 30 Hz cluster tick rate.
+  //
+  //  Sibling of `arcane_plus_spacetimedb.clusters_4.json` that demonstrates
+  //  the new `ClusterTickRateHz` field. Workload is otherwise identical so
+  //  the only delta vs the 20 Hz baseline is the cluster simulation tick rate
+  //  and the broadcast cadence (which scales with it).
+  //
+  //  This is the headline-tier MMO config Arcane publishes against:
+  //    - cluster simulation at 30 Hz (above the 5–20 Hz incumbent MMO band)
+  //    - 100 ms latency gate (down from the 200 ms baseline)
+  //
+  //  See `docs/BENCHMARK_JOURNAL.md` for the rationale: at the 7,250-player
+  //  ceiling on c7i.2xlarge clusters, NIC outbound is the binding bottleneck;
+  //  raising tick rate from 20 → 30 increases broadcast bytes/sec by ~1.5×
+  //  and is expected to lower the player-count ceiling proportionally. The
+  //  framing is "Arcane sustains 30 Hz at scale; incumbents sustain 5–20 Hz"
+  //  — see `WHY_ARCANE.md` for the comparison-set detail.
+  //
+  //  Comments use JSONC syntax — the harness strips them before parsing.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── scenario ───────────────────────────────────────────────────────────────
+
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+  "ArcaneClusterCount": 4,
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+  "PhysicsEngine":      "kinematic",
+
+  // ── cluster simulation tick rate — the field this sibling exists to demo ──
+  //
+  //  Read by Run-Benchmark-Aws.ps1 and passed to the cluster container as
+  //  BENCHMARK_TICK_RATE_HZ. Unset = 20 Hz default (preserves prior runs).
+
+  "ClusterTickRateHz":  30,
+
+  // ── connectivity (cloud overrides at runtime) ─────────────────────────────
+
+  "SpacetimeHost":  "http://127.0.0.1:3000",
+  "DatabaseName":   "arcane",
+  "RedisHost":      "127.0.0.1",
+  "RedisPort":      6379,
+
+  // ── Arcane topology (cloud overrides at runtime) ──────────────────────────
+
+  "ArcaneManagerHost":     "127.0.0.1",
+  "ArcaneManagerPort":     8081,
+  "ArcaneClusterHosts":    [],
+  "ArcaneClusterBasePort": 8090,
+  "ArcaneClusterPortStride": 1,
+
+  // ── sweep — same range as clusters_4, no change ───────────────────────────
+  //
+  //  The 30 Hz run uses the same starting tier and step as the 20 Hz baseline
+  //  so per-tier comparison is direct. Ceiling tier will likely come earlier
+  //  (cluster outbound NIC scales with tick rate × bytes-per-broadcast).
+
+  "ArcaneStep":        500,
+  "ArcaneMaxPlayers":  10000,
+  "DurationSeconds":   60,
+
+  // ── persistence (Arcane → SpacetimeDB) ────────────────────────────────────
+
+  "SpacetimePersistHz": 1,
+  "PersistBatchSize":   0,
+
+  // ── pass / fail thresholds — 100 ms latency gate (MMO headline) ───────────
+  //
+  //  100 ms is the playability bar Arcane publishes against — tighter than
+  //  the historical 200 ms baseline. Sibling configs that want the 200 ms
+  //  number for back-comparison just override `MaxLatencyMs`.
+
+  "MaxErrRate":     0.01,
+  "MaxLatencyMs":   100,
+
+  // ── swarm client workload (canonical) ─────────────────────────────────────
+
+  "TickRateHz":               10,
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+
+  // ── burst profile (canonical) ─────────────────────────────────────────────
+
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
+}
