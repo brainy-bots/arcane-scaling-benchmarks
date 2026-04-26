@@ -102,7 +102,14 @@ resource "aws_instance" "arph_cluster" {
   count = local.is_arph ? var.arcane_cluster_count : 0
 
   ami                         = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
-  instance_type               = var.data_instance_type
+  # Cluster nodes run the simulation + outbound broadcast — they're a
+  # compute-shaped workload, not a data-plane one. Pair with the driver
+  # (also `instance_type`) since the swarm side simulates the player tick
+  # at the same Hz the cluster ticks. Data-plane (Redis / SpacetimeDB /
+  # manager) stays on `data_instance_type` because it does almost nothing
+  # under the Arcane+Spacetime workload (Redis is pub/sub plumbing,
+  # SpacetimeDB is 1Hz persist, manager is HTTP /join).
+  instance_type               = var.instance_type
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [aws_security_group.bench.id]
   iam_instance_profile        = local.iam_instance_profile_name
