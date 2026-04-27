@@ -234,7 +234,8 @@ aws s3 cp "$S3_CONFIG" "$RUNTIME_CFG_DIR/" --region "$AWS_REGION" \
   || { echo "ERROR: failed to download config from $S3_CONFIG"; exit 1; }
 
 set +e
-docker run --rm \
+docker rm -f arcane-bench-driver 2>/dev/null || true
+docker run --rm --name arcane-bench-driver \
   --ulimit nofile=65536:65536 \
   -v "$OUT_DIR:/var/benchmark/out" \
   -v "$RUNTIME_CFG_DIR:/opt/benchmark/runtime-configs:ro" \
@@ -309,6 +310,16 @@ exit $EC
     # the single-driver path uses, just iterated across the open invocations.
     # Each driver is independent — any driver failing does NOT abort others;
     # final pass/fail aggregation happens in the post-process aggregator.
+    #
+    # Transient AWS API failures (throttle, network blip, non-JSON output)
+    # are tolerated up to MaxConsecutivePollFailures per driver; the driver
+    # stays in $pending and we retry next iteration. If a driver hits the
+    # cap we mark it failed with a synthetic Inv so downstream tail-output
+    # code doesn't null-deref.
+    $maxConsecutivePollFailures = 6
+    foreach ($e in $driverInvocations) {
+      $e | Add-Member -NotePropertyName ConsecutiveFailures -NotePropertyValue 0 -Force
+    }
     $pending = [System.Collections.Generic.List[object]]::new($driverInvocations)
     while ($pending.Count -gt 0) {
       Start-Sleep -Seconds 10
@@ -316,10 +327,42 @@ exit $EC
       foreach ($e in $pending) {
         $invRaw = aws ssm get-command-invocation --region $Region --command-id $e.CommandId --instance-id $e.InstanceId --output json 2>&1
         if ($LASTEXITCODE -ne 0) {
-          Write-Host "  driver-$($e.Index) get-command-invocation failed: $invRaw" -ForegroundColor Red
+          $e.ConsecutiveFailures++
+          Write-Host "  driver-$($e.Index) get-command-invocation failed (consecutive=$($e.ConsecutiveFailures)/$maxConsecutivePollFailures): $invRaw" -ForegroundColor Yellow
+          if ($e.ConsecutiveFailures -ge $maxConsecutivePollFailures) {
+            Write-Host "  driver-$($e.Index) giving up after $maxConsecutivePollFailures consecutive poll failures" -ForegroundColor Red
+            $e.Inv = [pscustomobject]@{
+              Status                = 'PollFailed'
+              StandardOutputContent = ''
+              StandardErrorContent  = "orchestrator gave up after $maxConsecutivePollFailures consecutive get-command-invocation failures"
+            }
+            $driverFailures++
+          } else {
+            $stillPending.Add($e)
+          }
           continue
         }
-        $inv = $invRaw | ConvertFrom-Json
+        $inv = $null
+        try {
+          $inv = $invRaw | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+          $e.ConsecutiveFailures++
+          Write-Host "  driver-$($e.Index) ConvertFrom-Json failed (consecutive=$($e.ConsecutiveFailures)/$maxConsecutivePollFailures): $_" -ForegroundColor Yellow
+          if ($e.ConsecutiveFailures -ge $maxConsecutivePollFailures) {
+            Write-Host "  driver-$($e.Index) giving up after $maxConsecutivePollFailures consecutive parse failures" -ForegroundColor Red
+            $e.Inv = [pscustomobject]@{
+              Status                = 'ParseFailed'
+              StandardOutputContent = ''
+              StandardErrorContent  = "orchestrator gave up after $maxConsecutivePollFailures consecutive ConvertFrom-Json failures"
+            }
+            $driverFailures++
+          } else {
+            $stillPending.Add($e)
+          }
+          continue
+        }
+        # Successful poll resets the consecutive-failure counter.
+        $e.ConsecutiveFailures = 0
         if ($inv.Status -in 'Pending', 'InProgress', 'Delayed') {
           $stillPending.Add($e)
         } else {
@@ -377,7 +420,7 @@ rm -rf "$DIAG" && mkdir -p "$DIAG"
 
 docker ps -a > "$DIAG/docker_ps.txt" 2>&1 || true
 
-for c in arcane-bench-redis arcane-bench-spacetime arcane-bench-manager arcane-bench-cluster; do
+for c in arcane-bench-redis arcane-bench-spacetime arcane-bench-manager arcane-bench-cluster arcane-bench-driver; do
   if docker inspect "$c" >/dev/null 2>&1; then
     docker logs --tail 20000 --timestamps "$c" > "$DIAG/$c.log" 2>&1 || true
     docker inspect "$c" > "$DIAG/$c.inspect.json" 2>&1 || true

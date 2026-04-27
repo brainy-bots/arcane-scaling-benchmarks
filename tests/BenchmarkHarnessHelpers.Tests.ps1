@@ -71,6 +71,19 @@ Describe 'Merge-ConfigFileParameters' {
     $script:ArcaneClusterPortStride | Should -Be 0
     $script:ArcaneExternalProcesses | Should -BeTrue
   }
+
+  It 'accepts multi-driver keys (DriverCount, MaxPlayersPerDriver, InterSpawnDelayMs)' {
+    $p = Join-Path $TestDrive 'multi-driver.json'
+    (@{
+      DriverCount         = 4
+      MaxPlayersPerDriver = 2000
+      InterSpawnDelayMs   = 4
+    } | ConvertTo-Json) | Set-Content -LiteralPath $p -Encoding utf8
+    Merge-ConfigFileParameters -Path $p
+    $script:DriverCount         | Should -Be 4
+    $script:MaxPlayersPerDriver | Should -Be 2000
+    $script:InterSpawnDelayMs   | Should -Be 4
+  }
 }
 
 Describe 'Test-IsLocalLoopbackHostName' {

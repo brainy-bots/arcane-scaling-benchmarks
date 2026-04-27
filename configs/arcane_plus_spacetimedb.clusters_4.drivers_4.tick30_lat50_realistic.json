@@ -46,10 +46,12 @@
   "ArcaneClusterPortStride": 1,
 
   // Per-driver tier budget. 4 drivers × these values = aggregate load on
-  // the cluster fleet (500..15000 step 500, mirroring Run F).
+  // the cluster fleet (500..8000 step 500). Per-driver max=2000 matches the
+  // MaxPlayersPerDriver safety cap below — sweep stops at aggregate 8,000.
+  // To push higher, raise arph_driver_count in tfvars (and DriverCount here).
   "ArcaneCeilingStartPlayers": 125,
   "ArcaneCeilingStep":         125,
-  "ArcaneCeilingMaxPlayers":   3750,
+  "ArcaneCeilingMaxPlayers":   2000,
   "DurationSeconds":           30,
 
   "SpacetimePersistHz": 1,
@@ -64,6 +66,21 @@
   "BetweenIncrementsSeconds": 1,
 
   "InterSpawnDelayMs": 4,
+
+  // DriverCount must match the provisioned arph_driver_count in the paired
+  // tfvars; the orchestrator pre-launch validator throws on mismatch.
+  // The harness uses it to multiply per-driver $players when waiting for
+  // cluster-side total entity count (Wait-ArcaneClustersReachEntityCount).
+  "DriverCount": 4,
+
+  // MaxPlayersPerDriver is the safety cap. The harness refuses to advance to
+  // a tier where per-driver $players > cap; the swarm refuses SET_PLAYERS
+  // values above cap (defense in depth). 2000 is conservative for c6in.4xlarge
+  // (~80% of the empirical c7i.4xlarge plateau at ~2,500). Total reachable
+  // CCU = 4 drivers × 2000 = 8000. Per-driver tier max above is 3750 — so
+  // cap kicks in at tier 16 (2000 per-driver = 8000 aggregate). To push
+  // higher, raise arph_driver_count and re-apply Terraform.
+  "MaxPlayersPerDriver": 2000,
 
   "BurstEnabled":           true,
   "BurstPeriodSecs":        30,

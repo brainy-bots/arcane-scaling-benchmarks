@@ -179,6 +179,28 @@ if ($cfgJson.PSObject.Properties.Name -contains 'ClusterTickRateHz') {
   $clusterTickRateHz = [int]$cfgJson.ClusterTickRateHz
 }
 
+# Multi-driver pre-launch validation. The config file declares per-driver
+# values; infrastructure declares actual driver count. Both must agree, and
+# per-driver tier max must fit under the safety cap. Failing here prevents
+# us from spending AWS time on a misconfigured run that the harness would
+# only mark INVALID after spinning up the full cluster fleet.
+$cfgDriverCount        = if ($cfgJson.PSObject.Properties.Name -contains 'DriverCount')         { [int]$cfgJson.DriverCount }         else { 1 }
+$cfgMaxPerDriver       = if ($cfgJson.PSObject.Properties.Name -contains 'MaxPlayersPerDriver') { [int]$cfgJson.MaxPlayersPerDriver } else { 0 }
+$cfgPerDriverMaxPlayers = if ($cfgJson.PSObject.Properties.Name -contains 'ArcaneCeilingMaxPlayers') { [int]$cfgJson.ArcaneCeilingMaxPlayers } else { 0 }
+$infraDriverCount      = if ($state.PSObject.Properties.Name -contains 'ArphDriverCount' -and $null -ne $state.ArphDriverCount) { [int]$state.ArphDriverCount } else { 1 }
+if ($infraDriverCount -lt 1) { $infraDriverCount = 1 }
+
+if ($cfgDriverCount -ne $infraDriverCount) {
+  throw "Config DriverCount=$cfgDriverCount disagrees with provisioned ArphDriverCount=$infraDriverCount. Either pick a config that matches the deployed driver count, or re-apply Terraform with arph_driver_count=$cfgDriverCount."
+}
+if ($cfgMaxPerDriver -gt 0 -and $cfgPerDriverMaxPlayers -gt 0 -and $cfgPerDriverMaxPlayers -gt $cfgMaxPerDriver) {
+  $aggregateMax = $cfgPerDriverMaxPlayers * $infraDriverCount
+  $needDrivers  = [int][Math]::Ceiling($aggregateMax / $cfgMaxPerDriver)
+  throw "Per-driver ArcaneCeilingMaxPlayers=$cfgPerDriverMaxPlayers exceeds MaxPlayersPerDriver=$cfgMaxPerDriver safety cap. To target aggregate $aggregateMax CCU you need at least arph_driver_count=$needDrivers (currently $infraDriverCount). Either lower the per-driver tier max or provision more drivers."
+}
+Write-Host ("Multi-driver validation: drivers={0} per_driver_max={1} cap={2} aggregate_max={3}" `
+    -f $infraDriverCount, $cfgPerDriverMaxPlayers, $cfgMaxPerDriver, ($cfgPerDriverMaxPlayers * $infraDriverCount)) -ForegroundColor DarkCyan
+
 # Stage the local config to S3 so the driver can pull it at run time. This is
 # the mechanism that lets researchers add new sibling configs without rebuilding
 # the image: the orchestrator uploads, the driver downloads + bind-mounts, and

@@ -145,7 +145,7 @@ resource "aws_instance" "arph_driver" {
   count = local.is_arph ? var.arph_driver_count : 0
 
   ami                         = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
-  instance_type               = var.instance_type
+  instance_type               = local.arph_driver_instance_type_effective
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [aws_security_group.bench.id]
   iam_instance_profile        = local.iam_instance_profile_name
