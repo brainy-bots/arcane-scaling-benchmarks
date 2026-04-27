@@ -288,6 +288,11 @@ function Merge-ConfigFileParameters {
     # PlayerStatePayload.user_data with deterministic-but-varied bytes for the
     # realistic-state benchmark. Arcane backend only.
     'UserDataBytes',
+    # Multi-driver join-rate pacing. Sleep N ms between consecutive player
+    # spawns inside the swarm. Default 0 = burst-spawn (single-driver). Set
+    # > 0 in multi-driver configs to keep aggregate manager /join load
+    # constant as driver count scales. See tasks #79–#82.
+    'InterSpawnDelayMs',
     # Metadata keys — consumed by the AWS run validator / docs, not by Run-Benchmark.ps1. Accepted here so the
     # same config file works for both the local harness and the AWS-side topology validator.
     'BenchmarkMode',
@@ -794,6 +799,12 @@ function Run-Scenario-Arcane {
   # deterministic bytes for the realistic-state benchmark.
   if ([int]$UserDataBytes -gt 0) {
     $swarmArgs += @('--user-data-bytes', [int]$UserDataBytes)
+  }
+  # InterSpawnDelayMs paces multi-driver runs so aggregate manager /join load
+  # stays at single-driver baseline regardless of driver count. Same null →
+  # int(0) → no flag pattern as UserDataBytes.
+  if ([int]$InterSpawnDelayMs -gt 0) {
+    $swarmArgs += @('--inter-spawn-delay-ms', [int]$InterSpawnDelayMs)
   }
   $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
     -RedirectStandardOutput $stdout `

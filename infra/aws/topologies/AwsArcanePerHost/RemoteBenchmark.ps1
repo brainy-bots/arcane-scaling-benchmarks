@@ -31,11 +31,21 @@ function Invoke-AwsArcanePerHostRemoteBenchmark {
   $spacetimeId = $State.SpacetimeInstanceId
   $managerId = $State.ManagerInstanceId
   $benchId = $State.BenchmarkInstanceId
+  # Multi-driver: BenchmarkInstanceIds (plural list) is the authoritative set.
+  # Older state files only had BenchmarkInstanceId (singular) — fall back to
+  # wrapping that into a 1-element list so single-driver paths keep working.
+  $driverInstIds = @()
+  if ($State.PSObject.Properties.Name -contains 'BenchmarkInstanceIds' -and $State.BenchmarkInstanceIds) {
+    $driverInstIds = @($State.BenchmarkInstanceIds) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
+  }
+  if ($driverInstIds.Count -eq 0 -and $benchId) { $driverInstIds = @("$benchId") }
+  $driverCount = $driverInstIds.Count
   $maxN = [int]$State.MaxArcaneClusters
   $clusterIds = @($State.ClusterIds) | ForEach-Object { "$_".Trim() }
   $clusterInstIds = @($State.ClusterInstanceIds) | ForEach-Object { "$_".Trim() }
 
   if ($maxN -lt 1) { throw 'State MaxArcaneClusters must be >= 1.' }
+  if ($driverCount -lt 1) { throw 'State BenchmarkInstanceIds must contain >= 1 driver.' }
   if ($clusterIds.Count -ne $maxN -or $clusterInstIds.Count -ne $maxN) {
     throw "State ClusterIds ($($clusterIds.Count)) and ClusterInstanceIds ($($clusterInstIds.Count)) must each have MaxArcaneClusters=$maxN entries."
   }
@@ -158,6 +168,7 @@ docker run -d --name arcane-bench-cluster --network host \
   -e SPACETIMEDB_PERSIST=1 \
   -e SPACETIMEDB_PERSIST_HZ=1 \
   -e BENCHMARK_TICK_RATE_HZ="__TICK_RATE_HZ__" \
+  -e ARCANE_BROADCAST_CHANNEL_CAP=256 \
   "$IMG" benchmark-cluster
 for i in $(seq 1 60); do bash -c "echo >/dev/tcp/127.0.0.1/8090" 2>/dev/null && exit 0; sleep 1; done
 echo "ERROR: cluster WS not listening on 8090"; docker logs arcane-bench-cluster --tail 80 || true; exit 1
@@ -252,32 +263,86 @@ exit $EC
   }
   $clusterTcpBlock = $tcpChecks -join "`n"
 
-  $drvScript = $drvTpl.
-    Replace('__IMG__',         (Escape-BashDoubleQuoted $BenchmarkImage)).
-    Replace('__CONFIG_PATH__', (Escape-BashDoubleQuoted $ContainerConfigPath)).
-    Replace('__S3_CONFIG__',   (Escape-BashDoubleQuoted $S3ConfigUri)).
-    Replace('__S3__',          (Escape-BashDoubleQuoted $s3Dest)).
-    Replace('__REGION__',      (Escape-BashDoubleQuoted $Region)).
-    Replace('__REDIS_IP__',    (Escape-BashDoubleQuoted $redisIp)).
-    Replace('__ST_IP__',       (Escape-BashDoubleQuoted $stIp)).
-    Replace('__MGR_IP__',      (Escape-BashDoubleQuoted $mgrIp)).
-    Replace('__CLUSTER_TCP_CHECKS__', $clusterTcpBlock).
-    Replace('__ACH__',         $pwshClusterHostsArg)
-  $drvScript = $drvScript -replace "`r`n", "`n"
+  # Per-driver SSM fan-out. Each driver runs the same bash script with a
+  # per-driver S3 destination subpath (driver-N/) so their outputs don't
+  # collide. send-command happens N times sequentially (each is an API call,
+  # not the benchmark itself). The benchmark workloads run in parallel inside
+  # AWS — we wait for all invocations together below.
+  $driverInvocations = New-Object System.Collections.Generic.List[object]
+  $driverFailures = 0
+  Write-Host "Multi-driver fan-out: $driverCount driver(s) on the manager." -ForegroundColor Cyan
 
-  Write-Host 'Sending driver SSM run command...' -ForegroundColor Cyan
-  $inv = $null
   try {
-    $cmdId = Send-SsmRunShellScript -Region $Region -InstanceId $benchId -ScriptBody $drvScript `
-      -Comment "Arcane arph driver benchmark $RunId" -TimeoutSeconds $SsmDriverBenchmarkTimeoutSeconds
+    for ($di = 0; $di -lt $driverCount; $di++) {
+      $thisDriverInstanceId = $driverInstIds[$di]
+      # driverCount==1 keeps the historical single-driver path: outputs land
+      # at $s3Dest (no driver-N/ subdir) so existing analysis scripts and the
+      # validity-gate code path stay backward-compatible.
+      $perDriverS3 = if ($driverCount -eq 1) { $s3Dest } else { "$s3Dest" + "driver-$di/" }
 
-    $inv = Wait-SsmCommandInvocation -Region $Region -InstanceId $benchId -CommandId $cmdId -Label 'Driver benchmark' -PollSeconds 10
-    Write-Host '--- stdout (tail) ---' -ForegroundColor DarkGray
-    ($inv.StandardOutputContent -split "`n" | Select-Object -Last 80) -join "`n"
-    Write-Host '--- stderr (tail) ---' -ForegroundColor DarkGray
-    ($inv.StandardErrorContent -split "`n" | Select-Object -Last 40) -join "`n"
+      $drvScript = $drvTpl.
+        Replace('__IMG__',         (Escape-BashDoubleQuoted $BenchmarkImage)).
+        Replace('__CONFIG_PATH__', (Escape-BashDoubleQuoted $ContainerConfigPath)).
+        Replace('__S3_CONFIG__',   (Escape-BashDoubleQuoted $S3ConfigUri)).
+        Replace('__S3__',          (Escape-BashDoubleQuoted $perDriverS3)).
+        Replace('__REGION__',      (Escape-BashDoubleQuoted $Region)).
+        Replace('__REDIS_IP__',    (Escape-BashDoubleQuoted $redisIp)).
+        Replace('__ST_IP__',       (Escape-BashDoubleQuoted $stIp)).
+        Replace('__MGR_IP__',      (Escape-BashDoubleQuoted $mgrIp)).
+        Replace('__CLUSTER_TCP_CHECKS__', $clusterTcpBlock).
+        Replace('__ACH__',         $pwshClusterHostsArg)
+      $drvScript = $drvScript -replace "`r`n", "`n"
 
-    Write-Host "Staged to S3: $s3Dest" -ForegroundColor Green
+      Write-Host "  driver-$di SSM send → $thisDriverInstanceId (S3 → $perDriverS3)" -ForegroundColor DarkGray
+      $cmdId = Send-SsmRunShellScript -Region $Region -InstanceId $thisDriverInstanceId -ScriptBody $drvScript `
+        -Comment "Arcane arph driver-$di benchmark $RunId" -TimeoutSeconds $SsmDriverBenchmarkTimeoutSeconds
+      $driverInvocations.Add([pscustomobject]@{
+          Index      = $di
+          InstanceId = $thisDriverInstanceId
+          CommandId  = $cmdId
+          S3Dest     = $perDriverS3
+          Inv        = $null
+        })
+    }
+
+    # Wait for ALL driver invocations in parallel. Same sequential-poll loop
+    # the single-driver path uses, just iterated across the open invocations.
+    # Each driver is independent — any driver failing does NOT abort others;
+    # final pass/fail aggregation happens in the post-process aggregator.
+    $pending = [System.Collections.Generic.List[object]]::new($driverInvocations)
+    while ($pending.Count -gt 0) {
+      Start-Sleep -Seconds 10
+      $stillPending = New-Object System.Collections.Generic.List[object]
+      foreach ($e in $pending) {
+        $invRaw = aws ssm get-command-invocation --region $Region --command-id $e.CommandId --instance-id $e.InstanceId --output json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "  driver-$($e.Index) get-command-invocation failed: $invRaw" -ForegroundColor Red
+          continue
+        }
+        $inv = $invRaw | ConvertFrom-Json
+        if ($inv.Status -in 'Pending', 'InProgress', 'Delayed') {
+          $stillPending.Add($e)
+        } else {
+          $e.Inv = $inv
+          $color = if ($inv.Status -eq 'Success') { 'Green' } else { 'Yellow' }
+          Write-Host "  driver-$($e.Index) Status=$($inv.Status)" -ForegroundColor $color
+          if ($inv.Status -ne 'Success') { $driverFailures++ }
+        }
+      }
+      $pending = $stillPending
+    }
+
+    foreach ($e in $driverInvocations) {
+      Write-Host "--- driver-$($e.Index) stdout (tail) ---" -ForegroundColor DarkGray
+      ($e.Inv.StandardOutputContent -split "`n" | Select-Object -Last 60) -join "`n"
+      Write-Host "--- driver-$($e.Index) stderr (tail) ---" -ForegroundColor DarkGray
+      ($e.Inv.StandardErrorContent -split "`n" | Select-Object -Last 30) -join "`n"
+      Write-Host "Driver-$($e.Index) staged to S3: $($e.S3Dest)" -ForegroundColor Green
+    }
+
+    if ($driverFailures -gt 0) {
+      Write-Host "WARNING: $driverFailures of $driverCount driver(s) reported non-Success SSM status; check S3 outputs and per-driver tails above." -ForegroundColor Yellow
+    }
   } finally {
     # Always capture per-node container logs so we can diagnose failures like
     # "swarm WS closed mid-sweep" where the driver's CSV says nothing useful.
@@ -291,6 +356,16 @@ exit $EC
     )
     for ($i = 0; $i -lt $maxN; $i++) {
       $nodes += [pscustomobject]@{ Label = "cluster$i"; InstanceId = $clusterInstIds[$i] }
+    }
+    # Multi-driver: capture each driver instance too. Single-driver runs keep
+    # the historical Label='driver' so existing diag-walking scripts that hard-
+    # code that name continue to find it.
+    if ($driverCount -eq 1) {
+      $nodes += [pscustomobject]@{ Label = 'driver'; InstanceId = $driverInstIds[0] }
+    } else {
+      for ($i = 0; $i -lt $driverCount; $i++) {
+        $nodes += [pscustomobject]@{ Label = "driver$i"; InstanceId = $driverInstIds[$i] }
+      }
     }
 
     $diagTpl = @'

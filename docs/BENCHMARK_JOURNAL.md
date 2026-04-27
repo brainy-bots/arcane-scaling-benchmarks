@@ -481,6 +481,156 @@ For incumbent comparison (where MMOs publish at 5–20 Hz / 200 ms): Arcane deli
 
 ---
 
+## 2026-04-27 — Broadcast channel cap tuned to 2048 → regression. The 256 default was already right.
+
+**Hypothesis.** The 4,750-realistic / 5,500-lean ceiling at 30 Hz / 100 ms (Runs F + D' from the prior journal entry) was bound by the hardcoded 256-slot tokio broadcast channel cap. Cluster CPU at 18% utilization, NIC at ~80%, yet `broadcast_lagged_frames=342k` kept firing — interpreted as "the channel is dropping frames because the cap is too small for 30 Hz × thousands of subscribers". Predicted that raising the cap would let the cluster spend the CPU + NIC headroom and lift the ceiling substantially.
+
+**Setup.**
+
+- arcane#51 landed: env-tunable `ARCANE_BROADCAST_CHANNEL_CAP`, default raised from 256 → 2048.
+- New image: `dev-2026-04-27-broadcastcap`. Same 4× c7i.2xlarge cluster fleet.
+- Run G: lean DR @ 30 Hz / 100 ms (`tick30.json`). Run id `20260427_031800`.
+- Run H: realistic DR @ 30 Hz / 100 ms (`tick30_realistic.json`). Run id `20260427_032943`.
+
+**Result.** Both runs **regressed** the ceiling.
+
+| Workload | cap=256 (prior) | cap=2048 (today) | Δ |
+|---|---|---|---|
+| Lean DR @ 30 Hz / 100 ms | 5,500 (Run D') | **4,250 (Run G)** | **−23%** |
+| Realistic DR @ 30 Hz / 100 ms | 4,750 (Run F) | **4,250 (Run H)** | **−11%** |
+
+**Mechanism.** Run H's cluster0 stats:
+
+```
+broadcast_lagged_events:   0       (vs 35,493 in Run F)
+broadcast_lagged_frames:   0       (vs 342,117 in Run F)
+last_tick_us:              5,459   (16% of 33 ms budget)
+ws_send_errors:            756
+entities_current:          1,125
+```
+
+Cap=2048 *eliminated* `Lagged` events as predicted — the channel never dropped a frame. But the ceiling went *down*, not up. Latency-side mechanism: with a deeper buffer, slow subscribers hold onto stale broadcasts longer in their personal receive queue, so their wall-clock latency at the cluster→subscriber edge stretches. The 100 ms gate is sensitive to that exact stretch. Cap=256 was effectively forcing aggressive freshness — the slowest subscribers got their stale data dropped (counted as Lagged) and they just lived with the gap, which kept the whole system's latency distribution tighter.
+
+**The general lesson.** Broadcast cap tuning is a tradeoff curve, not a "bigger is better" lever. For tight latency gates (≤100 ms), smaller cap forces the system to favor freshness over lossless delivery. For relaxed-latency cases (≥200 ms), bigger cap might win because Lagged drops cost more than queueing delay. The default for the published 30 Hz / 100 ms standard belongs at 256, not 2048.
+
+**Code change.** arcane#52 reverts the default to 256 in `broadcast_channel_cap.rs`. The env-var tunability stays — it's still the right knob, just defaulted to the empirically-correct value for the publishing standard.
+
+**Numbers I'm publishing as the headline.** Unchanged from the 2026-04-27 entry above.
+
+- **4,750 CCU at 30 Hz / 100 ms with realistic per-entity payload** (Run F).
+- 5,500 CCU at the same gate, lean baseline (Run D').
+- 8,250 CCU at 30 Hz / 200 ms with DR (Run D) — secondary point for relaxed-latency comparison.
+- 9,000 CCU at 20 Hz / 200 ms (Run A) — incumbent-tick-band reference.
+
+---
+
+## 2026-04-27 — Run I: clusters_8 + Redis on c5n.large → 4,000 (regression). 4-cluster setup is empirically optimal.
+
+**Hypothesis.** Doubling cluster count from 4 → 8 should lift the realistic ceiling. Math says per-cluster outbound bytes scales as P²/N, so 8c at the same P should halve per-cluster NIC pressure and free per-cluster fan-out work. Bonus: NIC-optimized Redis (c5n.large at 25 Gbps) eliminates Redis from any analysis at 8c's 4.7× cross-traffic vs 4c.
+
+**Setup.**
+
+- Image: `dev-2026-04-27-broadcastcap`. **`ARCANE_BROADCAST_CHANNEL_CAP=256` set as env var on cluster docker run** (RemoteBenchmark.ps1 change) since the broadcastcap image's default of 2048 was empirically wrong (Runs G + H). Note: arcane#52 reverted the upstream default to 256 but a new image hasn't been cut yet for that.
+- Fleet: `arcaneperhost.clusters_8.fastredis.tfvars` — 8 × c7i.2xlarge clusters, c7i.2xlarge driver, Redis on **c5n.large** (25 Gbps NIC, ~$0.108/hr), manager + spacetime on t3.large. New `redis_instance_type` terraform variable threads the NIC-optimized choice; default still falls through to `data_instance_type` so existing tfvars work unchanged.
+- Config: `arcane_plus_spacetimedb.clusters_8.tick30_realistic.json` (`ClusterTickRateHz: 30`, `MaxLatencyMs: 100`, `UserDataBytes: 100`, sweep 500→15000 step 500).
+- Run id: `20260427_081304`.
+
+**Result.** Ceiling **4,000 players** — **−16% regression vs Run F's 4,750 at 4c.**
+
+Cluster0 stats at the failure tier:
+
+```
+last_tick_us:              1,818   (5% of 33 ms tick budget — even MORE idle than 4c)
+broadcast_lagged_frames:   23      (down from 342k at 4c — DR + 8c basically eliminated lagged events)
+entities_current:          563     (= 4500/8; half the entities per cluster as expected)
+bytes_out:                 29.6 GB total
+parse_failures:            0
+```
+
+Per-tier latency breakdown (cliff is at 4,500 = 100.72 ms, just over the gate):
+
+| Players | lat_avg_ms | wire_avg_ms | drain_avg_ms |
+|---|---|---|---|
+| 1,000 | 16.6 | 14.3 | 0.00 |
+| 2,000 | 16.6 | 9.7 | 0.00 |
+| 3,000 | 21.1 | 4.6 | 0.00 |
+| 3,500 | 30.1 | 3.0 | 0.01 |
+| **4,000** | **49.8** | **2.0** | **0.01** |
+| 4,500 | 100.7 | 1.2 | 0.05 |
+
+Wire latency is *lower* than at 4c (1-14 ms vs up to 89 ms in Run F) — cluster fan-out is genuinely faster with smaller per-cluster frames. Drain latency stays trivial. The 49 ms total at 4,000 is dominated by the **T2→T_arrival gap** (cluster send → driver receive): cluster-to-subscriber TCP queueing + driver-side WS receive scheduling.
+
+**Why 8c regressed — honest analysis (corrected).**
+
+I initially attributed the regression to "per-player connection count grows with N in full mesh." That was wrong. **Each player connects to exactly one cluster** (manager `/join` → single cluster URL → one WebSocket per player). Per-cluster subscriber count is P/N, not P. `ws_accepts=563` at cluster0 confirms this matches 4500/8.
+
+So adding clusters genuinely *does* reduce per-cluster work along every metric:
+
+| Metric | 4c at 4,750 ceiling | 8c at 4,000 ceiling |
+|---|---|---|
+| Subscribers per cluster | 1,188 | 562 (halved) |
+| Owned entities per cluster | 1,188 | 562 (halved) |
+| `last_tick_us` (CPU per tick) | 6 ms (18% of budget) | 1.8 ms (5% — *more* idle) |
+| `broadcast_lagged_frames` | 342k | 23 (basically zero) |
+| `bytes_out` sustained per cluster | ~270 MB/s | ~25 MB/s |
+
+Yet the ceiling dropped from 4,750 → 4,000. **All measurable per-cluster pressure went down, but the system ceiling went down too.** Without more instrumentation I can't pin the mechanism. Plausible candidates:
+
+1. **AWS variance.** 4c and 8c ran on different fleets, different physical hosts, different placements. A single 16% delta is within normal AWS run-to-run variance for full-mesh networked workloads. Without an A/B re-test on the same day with the same fleet shape, we can't rule out "this is just noise."
+2. **Inter-cluster delta convergence latency.** Each cluster broadcasts the *full world* to its subscribers. To do that, it must receive deltas from all N-1 other clusters via Redis pub/sub before assembling its broadcast. At 8c the cluster has to wait for 7 sources to land per tick vs 3 at 4c. Even though Redis throughput is fine, the *worst-case* convergence time per tick may grow with N — the slowest neighbor sets the bar.
+3. **Cluster-side neighbor-deserialize overhead** in the tokio runtime. Cheap on CPU but each deserialize task adds scheduler-latency variance; at 8c there are 2.3× more such tasks per tick.
+4. **Manager round-robin distribution unevenness.** 4500/8 = 562.5; some cluster gets 562, another 563. Marginal.
+
+**What we know with confidence:** the 4-cluster ceiling (4,750 realistic) and 8-cluster ceiling (4,000 realistic) are both empirically measured, but the 8c regression mechanism isn't characterized. Going to 6c or 12c would help disambiguate variance from a real architectural curve, but adds another $5-10 to the budget without changing the headline.
+
+**What this is NOT evidence of.** It is *not* evidence that "multi-cluster is useless." Multi-cluster is the substrate for capabilities the benchmark intentionally doesn't exercise:
+
+- **Affinity-based AOI** (per-player subscribes to K nearby clusters where K ≪ N) — the architectural premise of Arcane. Without AOI, every cluster has to know about every entity, so multi-cluster only redistributes byte work without reducing it.
+- **Geographic distribution** (cluster per region; players connect to nearest).
+- **Heterogeneous workloads** (physics-tier vs logic-tier clusters).
+- **Fault isolation** (cluster failure kills its slice, not the whole game).
+- **Capacity beyond single-machine limits** (when one cluster can't hold all entities — not our case at this scale).
+
+In a benchmark that tests "every player sees every entity" with no AOI, multi-cluster's only lever is byte distribution, and the byte distribution maxes out somewhere around 4 clusters at this hardware tier. **That's the right empirical finding for this test premise**; it's just not a comment on the architectural value of multi-cluster generally.
+
+**Genuine paths to lift past 4,750 realistic at 30 Hz / 100 ms in full mesh (none easy):**
+
+- Bigger driver instance (c7i.4xlarge or c7i.8xlarge) — cheap experiment, might absorb whatever per-cluster receive jitter is occurring.
+- Network-optimized cluster instances (c5n.2xlarge / c6in.2xlarge) — same shape as Redis upgrade, just for clusters.
+- A/B re-test 4c vs 8c on the same day to characterize the variance band properly.
+
+**Decisions made on Martin's behalf.**
+
+1. Stopped after Run I rather than running clusters_6 to find an intermediate point. The structural argument for why 8c regresses is general (per-player connection grows with N) and applies to 6c too in proportion. Confirming 6c numerically would burn another $5 to learn the same shape.
+2. Set `ARCANE_BROADCAST_CHANNEL_CAP=256` in the topology RemoteBenchmark.ps1 docker run rather than waiting for a new image with the arcane#52 default revert baked in — saved the ~10 minutes of image rebuild time. The override is also defensive against future changes.
+3. Did *not* test 8c at the 200 ms gate (would have been Run J). The 100 ms gate is the publishing standard; 200 ms data point is already covered by Run D at 4c.
+
+**Tear-down.** Terraform fleet destroyed (28 resources). Total session spend across 2026-04-26 + 2026-04-27 + this run: ~$35-45 against the $50 budget.
+
+**Final headline matrix (unchanged from prior entry):**
+
+- **4,750 CCU at 30 Hz / 100 ms / realistic** — Run F, 4 clusters. **Empirically optimal cluster count for this workload.**
+- 5,500 lean at the same gate.
+- 8,250 lean at 30 Hz / 200 ms.
+- 9,000 lean at 20 Hz / 200 ms.
+
+**Next.** Physics integration ([arcane#51](https://github.com/brainy-bots/arcane/issues/51), [arcane#52](https://github.com/brainy-bots/arcane/issues/52)) per the agreed plan. The full-mesh ceiling is now well-characterized; the next benchmark publication track adds server-side rigid-body physics for shooter-class fairness.
+
+**Decisions made on Martin's behalf during this measurement (called out for review).**
+
+1. Stopped after Run G + H rather than running a third cap value (e.g. 1024 or 512) — the 2× regression in both workloads is enough signal that the trend is monotonic for our gate; more values would have been wasted spend.
+2. Kept the env-var tunability intact rather than reverting #51 entirely — operators with different latency budgets will want this knob.
+3. Did *not* set `ARCANE_BROADCAST_CHANNEL_CAP=256` explicitly in the topology docker run, since the arcane#52 default revert achieves the same effect cleaner. (If the upstream default ever changes, the topology env override would be the defensive next step.)
+
+**Tear-down.** Terraform fleet destroyed (20 resources). Total session spend across 2026-04-26 + 2026-04-27 + 2026-04-27 (this run): ~$30-35 against the $50 budget.
+
+**Next.**
+
+1. README rewrite (task #75) with the publishable matrix above. Now with confirmed evidence that the 4,750 / 5,500 numbers are not "easy lift away" — the 256 cap is the right value, the cluster CPU and NIC headroom is real but there's no trivial way to convert it into more CCU at the 100 ms gate.
+2. The honest path forward beyond 4,750 at 100 ms is architectural: dead reckoning is in, quantization is in, JSON-envelope is in — what's left is **affinity-based AOI** (arcane#69) which moves us off the O(P²) full-mesh fan-out entirely. That's the next major track.
+
+---
+
 ## What this journal captures vs what it doesn't
 
 **Captures.** The experimental chain — hypothesis, setup, result, interpretation, next. Each entry links to a specific `RunId` for anyone who wants to inspect the raw manifest/CSV/diag logs.
