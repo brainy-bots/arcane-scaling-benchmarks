@@ -179,6 +179,39 @@ if ($cfgJson.PSObject.Properties.Name -contains 'ClusterTickRateHz') {
   $clusterTickRateHz = [int]$cfgJson.ClusterTickRateHz
 }
 
+# Multi-driver pre-launch validation. The config file declares per-driver
+# values; infrastructure declares actual driver count. Both must agree, and
+# per-driver tier max must fit under the safety cap. Failing here prevents
+# us from spending AWS time on a misconfigured run that the harness would
+# only mark INVALID after spinning up the full cluster fleet.
+$cfgDriverCount        = if ($cfgJson.PSObject.Properties.Name -contains 'DriverCount')         { [int]$cfgJson.DriverCount }         else { 1 }
+$cfgMaxPerDriver       = if ($cfgJson.PSObject.Properties.Name -contains 'MaxPlayersPerDriver') { [int]$cfgJson.MaxPlayersPerDriver } else { 0 }
+$cfgPerDriverMaxPlayers = if ($cfgJson.PSObject.Properties.Name -contains 'ArcaneCeilingMaxPlayers') { [int]$cfgJson.ArcaneCeilingMaxPlayers } else { 0 }
+$infraDriverCount      = if ($state.PSObject.Properties.Name -contains 'ArphDriverCount' -and $null -ne $state.ArphDriverCount) { [int]$state.ArphDriverCount } else { 1 }
+if ($infraDriverCount -lt 1) { $infraDriverCount = 1 }
+
+if ($cfgDriverCount -ne $infraDriverCount) {
+  throw "Config DriverCount=$cfgDriverCount disagrees with provisioned ArphDriverCount=$infraDriverCount. Either pick a config that matches the deployed driver count, or re-apply Terraform with arph_driver_count=$cfgDriverCount."
+}
+# Effective cap = MaxPlayersPerDriver / sqrt(DriverCount). MaxPlayersPerDriver
+# in config is the SINGLE-driver reference; per-driver inbound bytes scale as
+# P_total^2 / N, so cap shrinks with sqrt(N) to keep per-driver inbound at
+# the single-driver level we measured safe.
+$cfgEffectiveCap = if ($cfgMaxPerDriver -gt 0 -and $infraDriverCount -gt 1) {
+  [int][Math]::Floor($cfgMaxPerDriver / [Math]::Sqrt($infraDriverCount))
+} else {
+  $cfgMaxPerDriver
+}
+if ($cfgEffectiveCap -gt 0 -and $cfgPerDriverMaxPlayers -gt 0 -and $cfgPerDriverMaxPlayers -gt $cfgEffectiveCap) {
+  $aggregateMax = $cfgPerDriverMaxPlayers * $infraDriverCount
+  # To stay under the cap at this aggregate, need N such that
+  # MaxPlayersPerDriver / sqrt(N) >= per_driver_target → N >= (ref / per_driver)^2.
+  $needDrivers = [int][Math]::Ceiling([Math]::Pow($cfgMaxPerDriver / $cfgPerDriverMaxPlayers, 2))
+  throw "Per-driver ArcaneCeilingMaxPlayers=$cfgPerDriverMaxPlayers exceeds effective cap=$cfgEffectiveCap (single-driver ref MaxPlayersPerDriver=$cfgMaxPerDriver / sqrt(DriverCount=$infraDriverCount)). To target aggregate $aggregateMax CCU at this per-driver size, raise arph_driver_count to >= $needDrivers (currently $infraDriverCount). Each added driver shrinks per-driver inbound (P_total^2/N) so cap recovers."
+}
+Write-Host ("Multi-driver validation: drivers={0} per_driver_max={1} cap_ref={2} effective_cap={3} aggregate_max={4}" `
+    -f $infraDriverCount, $cfgPerDriverMaxPlayers, $cfgMaxPerDriver, $cfgEffectiveCap, ($cfgPerDriverMaxPlayers * $infraDriverCount)) -ForegroundColor DarkCyan
+
 # Stage the local config to S3 so the driver can pull it at run time. This is
 # the mechanism that lets researchers add new sibling configs without rebuilding
 # the image: the orchestrator uploads, the driver downloads + bind-mounts, and

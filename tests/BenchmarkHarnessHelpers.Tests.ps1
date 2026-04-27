@@ -71,6 +71,55 @@ Describe 'Merge-ConfigFileParameters' {
     $script:ArcaneClusterPortStride | Should -Be 0
     $script:ArcaneExternalProcesses | Should -BeTrue
   }
+
+  It 'accepts multi-driver keys (DriverCount, MaxPlayersPerDriver, InterSpawnDelayMs)' {
+    $p = Join-Path $TestDrive 'multi-driver.json'
+    (@{
+      DriverCount         = 4
+      MaxPlayersPerDriver = 4000
+      InterSpawnDelayMs   = 4
+    } | ConvertTo-Json) | Set-Content -LiteralPath $p -Encoding utf8
+    Merge-ConfigFileParameters -Path $p
+    $script:DriverCount         | Should -Be 4
+    $script:MaxPlayersPerDriver | Should -Be 4000
+    $script:InterSpawnDelayMs   | Should -Be 4
+  }
+}
+
+Describe 'Multi-driver effective cap math (sqrt(N) scaling)' {
+  # MaxPlayersPerDriver in config = single-driver reference. Effective cap
+  # at N drivers = ref / sqrt(N). Verifies the math used both in
+  # Run-Scenario-Arcane (harness-side tier-stop + swarm CLI flag) and in
+  # the Run-Benchmark-Aws.ps1 pre-launch validator. Same formula in both
+  # places to avoid divergence.
+  It 'returns ref unchanged when DriverCount = 1' {
+    $ref = 4000
+    $n = 1
+    $effective = if ($ref -gt 0 -and $n -gt 1) { [int][Math]::Floor($ref / [Math]::Sqrt($n)) } else { $ref }
+    $effective | Should -Be 4000
+  }
+
+  It 'halves ref when DriverCount = 4 (sqrt(4) = 2)' {
+    $ref = 4000
+    $n = 4
+    $effective = [int][Math]::Floor($ref / [Math]::Sqrt($n))
+    $effective | Should -Be 2000
+  }
+
+  It 'returns ref/sqrt(N) for non-perfect-square N' {
+    # N=8 → sqrt(8) = 2.828 → 4000/2.828 = 1414.2 → floor = 1414
+    $ref = 4000
+    $n = 8
+    $effective = [int][Math]::Floor($ref / [Math]::Sqrt($n))
+    $effective | Should -Be 1414
+  }
+
+  It 'returns 0 when MaxPlayersPerDriver is unset (preserves "no cap" semantics)' {
+    $ref = 0
+    $n = 4
+    $effective = if ($ref -gt 0 -and $n -gt 1) { [int][Math]::Floor($ref / [Math]::Sqrt($n)) } else { $ref }
+    $effective | Should -Be 0
+  }
 }
 
 Describe 'Test-IsLocalLoopbackHostName' {

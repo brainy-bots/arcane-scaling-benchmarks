@@ -5,8 +5,12 @@ resource "random_uuid" "cluster" {
 resource "aws_instance" "arph_redis" {
   count = local.is_arph ? 1 : 0
 
-  ami                         = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
-  instance_type               = var.data_instance_type
+  ami = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
+  # Defaults to data_instance_type for the small-fleet case; override via
+  # `redis_instance_type` (e.g. c5n.large at 25 Gbps) for cluster counts
+  # where O(N²) inter-cluster pub/sub fan-out approaches the t3.large NIC
+  # limit. See BENCHMARK_JOURNAL.md 2026-04-27 entry for the math.
+  instance_type               = local.redis_instance_type_effective
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [aws_security_group.bench.id]
   iam_instance_profile        = local.iam_instance_profile_name
@@ -101,7 +105,7 @@ resource "aws_instance" "arph_manager" {
 resource "aws_instance" "arph_cluster" {
   count = local.is_arph ? var.arcane_cluster_count : 0
 
-  ami                         = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
+  ami = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
   # Cluster nodes run the simulation + outbound broadcast — they're a
   # compute-shaped workload, not a data-plane one. Pair with the driver
   # (also `instance_type`) since the swarm side simulates the player tick
@@ -138,10 +142,10 @@ resource "aws_instance" "arph_cluster" {
 }
 
 resource "aws_instance" "arph_driver" {
-  count = local.is_arph ? 1 : 0
+  count = local.is_arph ? var.arph_driver_count : 0
 
   ami                         = nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)
-  instance_type               = var.instance_type
+  instance_type               = local.arph_driver_instance_type_effective
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [aws_security_group.bench.id]
   iam_instance_profile        = local.iam_instance_profile_name
@@ -161,9 +165,10 @@ resource "aws_instance" "arph_driver" {
   key_name = var.key_name != "" ? var.key_name : null
 
   tags = {
-    Name                       = "arcane-bench-arph-driver-${local.setup_run_id}"
+    Name                       = "arcane-bench-arph-driver-${count.index}-${local.setup_run_id}"
     ArcaneBenchmarkEnvironment = var.topology
     ArcaneBenchmarkRole        = "driver"
+    ArcaneBenchmarkDriverIndex = tostring(count.index)
     Project                    = "arcane-benchmark"
     ManagedBy                  = "terraform"
   }

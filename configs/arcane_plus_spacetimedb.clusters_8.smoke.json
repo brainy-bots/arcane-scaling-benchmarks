@@ -1,0 +1,45 @@
+{
+  // 8-cluster smoke: 200 players, 30 s, 30 Hz cluster.
+  // Wiring check for the 8-cluster fleet — not a measurement.
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+  "ArcaneClusterCount": 8,
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+  "PhysicsEngine":      "kinematic",
+
+  "ClusterTickRateHz":  30,
+
+  "SpacetimeHost":  "http://127.0.0.1:3000",
+  "DatabaseName":   "arcane",
+  "RedisHost":      "127.0.0.1",
+  "RedisPort":      6379,
+
+  "ArcaneManagerHost":     "127.0.0.1",
+  "ArcaneManagerPort":     8081,
+  "ArcaneClusterHosts":    [],
+  "ArcaneClusterBasePort": 8090,
+  "ArcaneClusterPortStride": 1,
+
+  "ArcaneCeilingStartPlayers": 200,
+  "ArcaneCeilingStep":         200,
+  "ArcaneCeilingMaxPlayers":   200,
+  "DurationSeconds":           30,
+
+  "SpacetimePersistHz": 1,
+  "PersistBatchSize":   0,
+
+  "MaxErrRate":     0.10,
+  "MaxLatencyMs":   500,
+
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+
+  "BurstEnabled":           true,
+  "BurstPeriodSecs":        30,
+  "BurstCohortPercent":     20,
+  "BurstActionsPerPlayer":  10,
+  "BurstWindowMs":          500,
+  "ZoneEventPeriodSecs":    30,
+  "ZoneEventWindowMs":      500
+}

@@ -24,6 +24,22 @@ variable "arcane_cluster_count" {
   }
 }
 
+variable "arph_driver_count" {
+  type        = number
+  description = "For AwsArcanePerHost only: number of swarm driver instances. >1 enables multi-driver runs that fan out the player budget across N drivers; the harness aggregates per-driver FINAL lines into a strict-MAX gate. Each driver paces its joins so the manager sees single-driver join load regardless of N. Default 1 = historical single-driver behavior."
+  default     = 1
+  validation {
+    condition     = var.topology != "AwsArcanePerHost" || (var.arph_driver_count >= 1 && var.arph_driver_count <= 16)
+    error_message = "For AwsArcanePerHost, arph_driver_count must be between 1 and 16."
+  }
+}
+
+variable "arph_driver_instance_type" {
+  type        = string
+  description = "EC2 type for the swarm driver(s). Defaults to instance_type (the cluster type) so single-driver back-compat holds. Override to a NIC-optimized class (c6in.*, c5n.*) when running multi-driver — the swarm is broadcast-inbound-heavy and benefits from PPS + NIC headroom even when CPU isn't the bottleneck."
+  default     = ""
+}
+
 variable "instance_type" {
   type        = string
   description = "EC2 type for the benchmark driver."
@@ -32,8 +48,28 @@ variable "instance_type" {
 
 variable "data_instance_type" {
   type        = string
-  description = "EC2 type for Spacetime / Redis / manager / cluster nodes."
+  description = "EC2 type for Spacetime / manager nodes (and Redis, unless overridden by redis_instance_type)."
   default     = "t3.large"
+}
+
+variable "redis_instance_type" {
+  type        = string
+  description = "EC2 type for Redis. Defaults to data_instance_type. Override to a NIC-optimized class (c5n.*, c6in.*, c7gn.*) when inter-cluster pub/sub bandwidth becomes the wall — see BENCHMARK_JOURNAL.md 2026-04-27 entry for the math."
+  default     = ""
+}
+
+locals {
+  # Effective Redis instance type — falls back to data_instance_type when the
+  # operator hasn't explicitly chosen a NIC-optimized one. Keeps existing
+  # tfvars files working unchanged.
+  redis_instance_type_effective = var.redis_instance_type != "" ? var.redis_instance_type : var.data_instance_type
+
+  # Effective driver instance type — falls back to instance_type (shared with
+  # the cluster fleet) so single-driver tfvars don't need updating. Multi-driver
+  # tfvars override to NIC-optimized (c6in.*, c5n.*) without changing cluster
+  # type. The swarm is broadcast-inbound-heavy and benefits from PPS + NIC
+  # headroom even when CPU isn't the bottleneck.
+  arph_driver_instance_type_effective = var.arph_driver_instance_type != "" ? var.arph_driver_instance_type : var.instance_type
 }
 
 variable "root_volume_gib" {

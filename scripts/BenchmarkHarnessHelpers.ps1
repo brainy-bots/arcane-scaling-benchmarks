@@ -288,6 +288,24 @@ function Merge-ConfigFileParameters {
     # PlayerStatePayload.user_data with deterministic-but-varied bytes for the
     # realistic-state benchmark. Arcane backend only.
     'UserDataBytes',
+    # Multi-driver join-rate pacing. Sleep N ms between consecutive player
+    # spawns inside the swarm. Default 0 = burst-spawn (single-driver). Set
+    # > 0 in multi-driver configs to keep aggregate manager /join load
+    # constant as driver count scales. See tasks #79–#82.
+    'InterSpawnDelayMs',
+    # Multi-driver: how many drivers are running this same config. The
+    # validity gate (cluster entity count check) waits for cluster total
+    # = $players * $DriverCount, since each driver only spawns its slice.
+    # Default 1 = single-driver semantics unchanged.
+    'DriverCount',
+    # SINGLE-DRIVER reference cap. The harness derives the EFFECTIVE per-
+    # driver cap as `MaxPlayersPerDriver / sqrt(DriverCount)`, then enforces
+    # it both in the tier-sweep (refuses to advance past it) and via the
+    # swarm's --max-players-per-driver flag. The sqrt scaling holds per-
+    # driver inbound bytes/sec constant as drivers are added (broadcasts
+    # scale as P_total^2 / N). Default 0 = no cap. With Run F's c7i.4xlarge
+    # break point of 4500, a defensible reference is 4000 (≈11% margin).
+    'MaxPlayersPerDriver',
     # Metadata keys — consumed by the AWS run validator / docs, not by Run-Benchmark.ps1. Accepted here so the
     # same config file works for both the local harness and the AWS-side topology validator.
     'BenchmarkMode',
@@ -760,6 +778,27 @@ function Run-Scenario-Arcane {
   if (Test-Path $stderr) { Remove-Item $stderr -Force }
   if (Test-Path $stdout) { Remove-Item $stdout -Force }
 
+  # Multi-driver effective values derived once and used both in the swarm
+  # CLI args (cap passed to --max-players-per-driver) and in the tier-sweep
+  # validity gate below. MaxPlayersPerDriver in the config is the
+  # SINGLE-DRIVER reference cap (the empirical safe value when one driver
+  # holds all the players). Effective cap shrinks with sqrt(N) so per-driver
+  # inbound bytes/sec stays constant as drivers are added — broadcast bytes
+  # scale as P_total^2 / N (each driver hosts P/N players, each receiving
+  # all P entity broadcasts). Default DriverCount=1 collapses to identity.
+  $effectiveDriverCount = if ($null -ne $DriverCount -and [int]$DriverCount -gt 0) { [int]$DriverCount } else { 1 }
+  $effectiveDriverCap = if ($null -ne $MaxPlayersPerDriver -and [int]$MaxPlayersPerDriver -gt 0) {
+    if ($effectiveDriverCount -gt 1) {
+      [int][Math]::Floor([int]$MaxPlayersPerDriver / [Math]::Sqrt($effectiveDriverCount))
+    } else {
+      [int]$MaxPlayersPerDriver
+    }
+  } else { 0 }
+  if ($effectiveDriverCap -gt 0 -or $effectiveDriverCount -gt 1) {
+    Write-Host ("  [multi-driver] DriverCount={0} MaxPlayersPerDriver_ref={1} effective_cap={2}" `
+        -f $effectiveDriverCount, $MaxPlayersPerDriver, $effectiveDriverCap) -ForegroundColor DarkCyan
+  }
+
   $swarmArgs = @(
     '--backend', 'arcane',
     '--players', $ScenarioStartPlayers,
@@ -795,6 +834,19 @@ function Run-Scenario-Arcane {
   if ([int]$UserDataBytes -gt 0) {
     $swarmArgs += @('--user-data-bytes', [int]$UserDataBytes)
   }
+  # InterSpawnDelayMs paces multi-driver runs so aggregate manager /join load
+  # stays at single-driver baseline regardless of driver count. Same null →
+  # int(0) → no flag pattern as UserDataBytes.
+  if ([int]$InterSpawnDelayMs -gt 0) {
+    $swarmArgs += @('--inter-spawn-delay-ms', [int]$InterSpawnDelayMs)
+  }
+  # The swarm gets the EFFECTIVE cap (sqrt-scaled by driver count), not the
+  # raw single-driver reference. SET_PLAYERS values above the effective cap
+  # get clamped + a [cap] line goes to stderr. Defense-in-depth alongside
+  # the harness-side tier-stop logic that uses the same value.
+  if ($effectiveDriverCap -gt 0) {
+    $swarmArgs += @('--max-players-per-driver', $effectiveDriverCap)
+  }
   $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
     -RedirectStandardOutput $stdout `
     -RedirectStandardError $stderr `
@@ -806,9 +858,33 @@ function Run-Scenario-Arcane {
 
   $players = $ScenarioStartPlayers
   $ceiling = $null
+  # $effectiveDriverCount and $effectiveDriverCap derived earlier (above the
+  # swarm-launch block) so the same values feed both the swarm CLI flag and
+  # the tier-sweep validity gate.
   try {
     while ($players -le $ScenarioMaxPlayers) {
-      Write-Host "  [Arcane+Spacetime] num_servers=$NumServers testing players=$players ..." -ForegroundColor Gray
+      # Driver-cap safety net: refuse to advance to a tier where per-driver
+      # players would exceed the cap. Marks the tier INVALID with a clear
+      # "would-exceed-driver-cap" reason so the operator knows to provision
+      # more drivers rather than trust the next tier's number.
+      if ($effectiveDriverCap -gt 0 -and $players -gt $effectiveDriverCap) {
+        Write-Host ("  [invalid] tier players=$players would-exceed-driver-cap=$effectiveDriverCap — provision more drivers (current driver_count=$effectiveDriverCount, total=$($players * $effectiveDriverCount))") -ForegroundColor Yellow
+        $script:ArcaneRunEvidence += [PSCustomObject]@{
+          backend                   = 'arcane'
+          num_servers               = $NumServers
+          players                   = $players
+          tier_valid                = $false
+          tier_pass                 = $false
+          driver_count              = $effectiveDriverCount
+          total_players_aggregate   = $players * $effectiveDriverCount
+          ceiling_driver_cap        = $effectiveDriverCap
+          most_overloaded           = 'driver-cap'
+          most_overloaded_detail    = "per-driver players=$players exceeds MaxPlayersPerDriver=$effectiveDriverCap"
+        }
+        break
+      }
+      $clusterTotalTarget = $players * $effectiveDriverCount
+      Write-Host "  [Arcane+Spacetime] num_servers=$NumServers testing players=$players (cluster_total=$clusterTotalTarget across $effectiveDriverCount driver(s)) ..." -ForegroundColor Gray
       Send-SwarmCommand -Port $ControlPort -Line "SET_PLAYERS $players"
 
       # Wait for the swarm's connects to reach the cluster's /stats before we
@@ -822,7 +898,7 @@ function Run-Scenario-Arcane {
       }
       $ramp = Wait-ArcaneClustersReachEntityCount -ClusterHosts $clusterHostsForRamp `
         -ClusterBasePort $ArcaneClusterBasePort -ClusterPortStride $ArcaneClusterPortStride `
-        -TargetTotalEntities $players -ReachedRatioMin $ArcaneRampReachedRatio `
+        -TargetTotalEntities $clusterTotalTarget -ReachedRatioMin $ArcaneRampReachedRatio `
         -TimeoutSeconds $ArcaneRampTimeoutSeconds -PollIntervalSeconds 2
       Write-Host ("    [ramp] reached={0} target~{1} elapsed={2:N1}s ready={3}" `
           -f $ramp.FinalTotal, $players, $ramp.ElapsedSec, $ramp.Ready) -ForegroundColor DarkGray
@@ -879,7 +955,9 @@ function Run-Scenario-Arcane {
           players                   = $players
           swarm_pass                = $false
           cluster_entities_observed = $ramp.FinalTotal
-          cluster_entities_required = [int][Math]::Ceiling($players * $ArcaneRampReachedRatio)
+          cluster_entities_required = [int][Math]::Ceiling(($players * $effectiveDriverCount) * $ArcaneRampReachedRatio)
+          driver_count              = $effectiveDriverCount
+          total_players_aggregate   = $players * $effectiveDriverCount
           tier_valid                = $false
           validity_reason           = "ramp timeout: $($ramp.Detail)"
           most_overloaded           = $mostOverloaded
@@ -943,7 +1021,10 @@ function Run-Scenario-Arcane {
           }
         }
       }
-      $required = [int][Math]::Ceiling($players * $ArcaneEntityObservedRatioMin)
+      # Multi-driver: required is against the across-drivers cluster total,
+      # not the per-driver tier. Single-driver runs see effectiveDriverCount=1
+      # so this collapses to the historical formula.
+      $required = [int][Math]::Ceiling(($players * $effectiveDriverCount) * $ArcaneEntityObservedRatioMin)
       $tierValid = $true
       $validityReason = ''
       if (-not $statsPollOk) {
@@ -951,7 +1032,7 @@ function Run-Scenario-Arcane {
         $validityReason = "cluster /stats poll failed: $($statsDetail -join '; ')"
       } elseif ($entitiesObserved -lt $required) {
         $tierValid = $false
-        $validityReason = "cluster entities_current=$entitiesObserved, required >= $required ($($ArcaneEntityObservedRatioMin * 100)% of $players). $($statsDetail -join '; ')"
+        $validityReason = "cluster entities_current=$entitiesObserved, required >= $required ($($ArcaneEntityObservedRatioMin * 100)% of cluster_total=$($players * $effectiveDriverCount)). $($statsDetail -join '; ')"
       }
       $observedForLog = if ($statsPollOk) { $entitiesObserved } else { -1 }
       Write-Host ("    [evidence] cluster_entities_observed={0} required>={1} valid={2}" `
@@ -995,6 +1076,8 @@ function Run-Scenario-Arcane {
       $script:ArcaneRunEvidence += [PSCustomObject]@{
         num_servers               = $NumServers
         players                   = $players
+        driver_count              = $effectiveDriverCount
+        total_players_aggregate   = $players * $effectiveDriverCount
         swarm_pass                = [bool]$pass
         cluster_entities_observed = $entitiesObserved
         cluster_entities_required = $required
