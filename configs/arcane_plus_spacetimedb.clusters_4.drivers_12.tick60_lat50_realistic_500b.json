@@ -1,0 +1,49 @@
+{
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+  "ArcaneClusterCount": 4,
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+  "PhysicsEngine":      "kinematic",
+
+  "ClusterTickRateHz":  60,
+  "UserDataBytes":      500,
+
+  "SpacetimeHost":  "http://127.0.0.1:3000",
+  "DatabaseName":   "arcane",
+  "RedisHost":      "127.0.0.1",
+  "RedisPort":      6379,
+
+  "ArcaneManagerHost":       "127.0.0.1",
+  "ArcaneManagerPort":       8081,
+  "ArcaneClusterHosts":      [],
+  "ArcaneClusterBasePort":   8090,
+  "ArcaneClusterPortStride": 1,
+
+  "ArcaneCeilingStartPlayers": 125,
+  "ArcaneCeilingStep":         125,
+  "ArcaneCeilingMaxPlayers":   1154,
+  "DurationSeconds":           30,
+
+  "SpacetimePersistHz": 1,
+  "PersistBatchSize":   0,
+
+  "MaxErrRate":   0.01,
+  "MaxLatencyMs": 50,
+
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+  "InterSpawnDelayMs":        8,
+
+  "DriverCount": 12,
+
+  "MaxPlayersPerDriver": 4000,
+
+  "BurstEnabled":          true,
+  "BurstPeriodSecs":       30,
+  "BurstCohortPercent":    20,
+  "BurstActionsPerPlayer": 10,
+  "BurstWindowMs":         500,
+  "ZoneEventPeriodSecs":   30,
+  "ZoneEventWindowMs":     500
+}
