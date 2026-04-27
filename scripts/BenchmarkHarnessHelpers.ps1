@@ -298,12 +298,13 @@ function Merge-ConfigFileParameters {
     # = $players * $DriverCount, since each driver only spawns its slice.
     # Default 1 = single-driver semantics unchanged.
     'DriverCount',
-    # Hard safety cap on simultaneously-active players per driver. The
-    # tier-sweep refuses to advance to a tier where per-driver $players
-    # > $MaxPlayersPerDriver and marks that tier INVALID with reason
-    # "would-exceed-driver-cap". Forces the operator to provision more
-    # drivers instead of silently entering the tokio-saturation zone.
-    # Default 0 = no cap. Threaded to the swarm via --max-players-per-driver.
+    # SINGLE-DRIVER reference cap. The harness derives the EFFECTIVE per-
+    # driver cap as `MaxPlayersPerDriver / sqrt(DriverCount)`, then enforces
+    # it both in the tier-sweep (refuses to advance past it) and via the
+    # swarm's --max-players-per-driver flag. The sqrt scaling holds per-
+    # driver inbound bytes/sec constant as drivers are added (broadcasts
+    # scale as P_total^2 / N). Default 0 = no cap. With Run F's c7i.4xlarge
+    # break point of 4500, a defensible reference is 4000 (≈11% margin).
     'MaxPlayersPerDriver',
     # Metadata keys — consumed by the AWS run validator / docs, not by Run-Benchmark.ps1. Accepted here so the
     # same config file works for both the local harness and the AWS-side topology validator.
@@ -777,6 +778,27 @@ function Run-Scenario-Arcane {
   if (Test-Path $stderr) { Remove-Item $stderr -Force }
   if (Test-Path $stdout) { Remove-Item $stdout -Force }
 
+  # Multi-driver effective values derived once and used both in the swarm
+  # CLI args (cap passed to --max-players-per-driver) and in the tier-sweep
+  # validity gate below. MaxPlayersPerDriver in the config is the
+  # SINGLE-DRIVER reference cap (the empirical safe value when one driver
+  # holds all the players). Effective cap shrinks with sqrt(N) so per-driver
+  # inbound bytes/sec stays constant as drivers are added — broadcast bytes
+  # scale as P_total^2 / N (each driver hosts P/N players, each receiving
+  # all P entity broadcasts). Default DriverCount=1 collapses to identity.
+  $effectiveDriverCount = if ($null -ne $DriverCount -and [int]$DriverCount -gt 0) { [int]$DriverCount } else { 1 }
+  $effectiveDriverCap = if ($null -ne $MaxPlayersPerDriver -and [int]$MaxPlayersPerDriver -gt 0) {
+    if ($effectiveDriverCount -gt 1) {
+      [int][Math]::Floor([int]$MaxPlayersPerDriver / [Math]::Sqrt($effectiveDriverCount))
+    } else {
+      [int]$MaxPlayersPerDriver
+    }
+  } else { 0 }
+  if ($effectiveDriverCap -gt 0 -or $effectiveDriverCount -gt 1) {
+    Write-Host ("  [multi-driver] DriverCount={0} MaxPlayersPerDriver_ref={1} effective_cap={2}" `
+        -f $effectiveDriverCount, $MaxPlayersPerDriver, $effectiveDriverCap) -ForegroundColor DarkCyan
+  }
+
   $swarmArgs = @(
     '--backend', 'arcane',
     '--players', $ScenarioStartPlayers,
@@ -818,11 +840,12 @@ function Run-Scenario-Arcane {
   if ([int]$InterSpawnDelayMs -gt 0) {
     $swarmArgs += @('--inter-spawn-delay-ms', [int]$InterSpawnDelayMs)
   }
-  # MaxPlayersPerDriver is the hard safety cap enforced inside the swarm —
-  # SET_PLAYERS values above the cap get clamped + a [cap] line goes to
-  # stderr. Defense-in-depth alongside the harness-side tier-stop logic.
-  if ([int]$MaxPlayersPerDriver -gt 0) {
-    $swarmArgs += @('--max-players-per-driver', [int]$MaxPlayersPerDriver)
+  # The swarm gets the EFFECTIVE cap (sqrt-scaled by driver count), not the
+  # raw single-driver reference. SET_PLAYERS values above the effective cap
+  # get clamped + a [cap] line goes to stderr. Defense-in-depth alongside
+  # the harness-side tier-stop logic that uses the same value.
+  if ($effectiveDriverCap -gt 0) {
+    $swarmArgs += @('--max-players-per-driver', $effectiveDriverCap)
   }
   $procSwarm = Start-Process -FilePath $SwarmExe -WorkingDirectory $SwarmWorkspaceRoot -NoNewWindow -PassThru `
     -RedirectStandardOutput $stdout `
@@ -835,11 +858,9 @@ function Run-Scenario-Arcane {
 
   $players = $ScenarioStartPlayers
   $ceiling = $null
-  # Multi-driver: each driver only spawns its own slice ($players), but the
-  # cluster's `entities_current` reflects the ACROSS-DRIVERS total. Default
-  # 1 keeps single-driver semantics (cluster total == per-driver target).
-  $effectiveDriverCount = if ($null -ne $DriverCount -and [int]$DriverCount -gt 0) { [int]$DriverCount } else { 1 }
-  $effectiveDriverCap   = if ($null -ne $MaxPlayersPerDriver -and [int]$MaxPlayersPerDriver -gt 0) { [int]$MaxPlayersPerDriver } else { 0 }
+  # $effectiveDriverCount and $effectiveDriverCap derived earlier (above the
+  # swarm-launch block) so the same values feed both the swarm CLI flag and
+  # the tier-sweep validity gate.
   try {
     while ($players -le $ScenarioMaxPlayers) {
       # Driver-cap safety net: refuse to advance to a tier where per-driver
