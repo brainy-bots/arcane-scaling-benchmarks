@@ -4,7 +4,7 @@ This repository is the public scaling benchmark for [**Arcane**](https://github.
 
 The result below is reproducible from scratch by any reader with an AWS account in **~25 minutes** using a pre-built public Docker image — no compilation step required.
 
-> **13,500 concurrent players at 60 Hz with 1 KB of per-entity state, 10.4 ms mean server-side latency, on commodity AWS hardware.**
+> **13,500 CCU at 60 Hz, 1 KB payload, 10.4 ms mean server-side latency, on commodity AWS hardware.**
 
 ## The claim
 
@@ -22,6 +22,8 @@ The result below is reproducible from scratch by any reader with an AWS account 
 | Run mode | Full-mesh broadcast (no area-of-interest filtering, no affinity clustering active — worst case for replication bandwidth) |
 | Simulation | Kinematic motion + radius-collision (no rigid-body physics) |
 | Run ID | `20260427_191741` |
+
+*On the 1 KB number.* That's the **slot size** carried whenever an entity appears in a broadcast delta — not the per-tick per-player downstream wire rate. Most entities are velocity-stable most ticks and are dead-reckoned client-side rather than re-broadcast (a standard MMO replication technique; see [What the workload actually does](#what-the-workload-actually-does) below for the detail). Effective bytes-on-the-wire depend on movement pattern.
 
 *The engine is not at its ceiling.* 1,125 per driver is the √N driver-safety cap that prevents a single load generator from becoming the bottleneck — not a measured engine break. Latency stayed essentially flat across the entire ramp; the full curve and methodology are in [Detailed description](#detailed-description) below.
 
@@ -98,6 +100,24 @@ driver-0 sample, ramp from 125 to 1,125 players-per-driver (1.5K → 13.5K aggre
 The driver records a wall-clock timestamp when it sends an outbound action (a `seq_id`-tagged WebSocket message) and another wall-clock timestamp when it receives the next server broadcast frame whose ack-list contains that `seq_id`. The reported `lat_avg_ms` is the mean of those deltas across every action the driver sent during the 30 s steady-state phase of a tier.
 
 That measurement includes: cluster ingest, action processing in the simulation tick, broadcast encoding, network transit driver-side, and any kernel-level scheduling on either side. It does **not** include public-internet RTT — the swarm is in the same VPC as the cluster fleet, so this is a server-side latency floor. Add typical regional internet RTT (30–60 ms) for an end-to-end perceived figure.
+
+## What counts as an error
+
+A round-trip is recorded as an **error** when one of these happens during the 30 s steady-state phase of a tier:
+
+1. **`seq_id` ack timeout.** The driver sent an action tagged with a sequence ID but never received the cluster's ack-broadcast within the per-action timeout (~5 s). Either the action never reached the cluster, or the cluster never acknowledged it.
+2. **WebSocket connection drop.** The connection closed abnormally mid-tier.
+3. **Wire-protocol violation.** A frame arrived that didn't decode against the expected schema.
+
+The **0.000 %** at the top tier of Run O (0 errors across ~24,000,000 round-trips) is across all three categories.
+
+The error counter does **not** include:
+
+- **Superseded broadcast frames.** Tokio's per-subscriber broadcast channel emits a `broadcast_lagged_event` if a subscriber falls 256 frames behind, after which those 256 frames are skipped for that subscriber and the next frame received carries the latest world state. From the player's perspective the world is current; only obsolete state was discarded. These events are tracked as a separate cluster-side counter (`broadcast_lagged_events`) and were 0 at the headline tier.
+- **Periodic resync packets.** Every N ticks (default 60) the cluster sends a full snapshot rather than a delta, so clients can recover from any earlier loss. Resyncs are normal traffic, not failures.
+- **Cohort-burst back-pressure.** During the 500 ms burst window every 30 s, requests intentionally queue against the spike — that's the workload by design, not a defect.
+
+In short: errors here mean *the player's action was lost or the player's connection broke*. They do **not** mean *the broadcast pipeline temporarily skipped a frame that was about to be replaced anyway*.
 
 ## What the workload actually does
 
