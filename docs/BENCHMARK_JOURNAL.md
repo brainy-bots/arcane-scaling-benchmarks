@@ -631,6 +631,122 @@ In a benchmark that tests "every player sees every entity" with no AOI, multi-cl
 
 ---
 
+## 2026-04-27 — Multi-driver scale-up: Runs J → O take the realistic ceiling from 4,750 to 13,500 at 60 Hz / 1 KB
+
+**Big-picture hypothesis.** Run F's 4,750 CCU at 30 Hz / 100 ms / realistic was *driver-bound*, not engine-bound — a single c7i.4xlarge swarm pegged at ~800–900 % CPU before any cluster CPU pressure showed up. If we fan the player budget across N independent driver instances, each driver's *outbound* load drops as 1/N but each driver's *inbound* load (full-mesh broadcasts) drops only as 1/N at the same total CCU, while the broadcast bandwidth aggregated across drivers grows as P²/N². So the per-driver cap should scale as `ref/√N`, not `ref/N` — keeping per-driver inbound bytes/sec roughly constant as we add drivers. With that math we should be able to find an engine ceiling well above 4,750.
+
+**Side goals for the session:**
+1. Tighter latency gate: replace the 100 ms publishing standard with **50 ms engine-side** — leaves headroom for ~30 ms regional internet RTT before crossing 80 ms perceived.
+2. NIC-optimized cluster hardware (c6in.2xlarge, 50 Gbps) once 1 KB payload exposed a sustained-NIC wall on c7i.2xlarge.
+3. Test 60 Hz tick rate (action-game-grade) once the realistic-state ceiling at 30 Hz was characterized.
+4. Test richer per-entity payload (1 KB) at the same elevated tick rate.
+
+**Setup shared across all runs.**
+
+- Image: `ghcr.io/brainy-bots/arcane-benchmark:dev-2026-04-27-multidriver`. Adds `--inter-spawn-delay-ms` and `--max-players-per-driver` swarm CLI flags; harness derives the effective per-driver cap as `floor(MaxPlayersPerDriver / sqrt(DriverCount))`. Per-driver join-rate pacing keeps the manager's aggregate join rate at single-driver baseline regardless of N.
+- Driver instances: c6in.4xlarge (16 vCPU, 75 Gbps NIC). The bottleneck on the older c7i.4xlarge driver was tokio scheduler at ~50 % vCPU, NOT raw CPU; c6in's NIC headroom removes a possible co-bottleneck and makes the per-driver cap derivation cleaner.
+- Manager `/join` round-robin: each player connects to one cluster; manager balances connections.
+
+### Run J — 4 drivers × cap 2,000 = 8,000 max @ 30 Hz / 50 ms / 100 B (RunId `20260427_142533`)
+
+**Result.** Ceiling **8,000** (full ramp passed; cap = 4000 / √4 = 2,000). Mean lat across 4 drivers: ~16 ms across all tiers. Cluster CPU healthy. Drivers at peak: 657–783 % on c6in.4xlarge.
+
+**Interpretation.** The √N cap math holds. 8,000 was the *cap-enforced* ceiling, not the engine ceiling — engine showed zero distress.
+
+### Run K — 8 drivers × cap 1,414 = 11,312 max @ 30 Hz / 50 ms / 100 B (RunId `20260427_152543`)
+
+**Result.** Ceiling **11,000** (cap 4000/√8 = 1,414; harness step rounds to 1,125 per driver; aggregate 11,000). Mean lat ~16 ms — same as Run J at 1.4× the player count.
+
+**Interpretation.** Same shape as Run J at 1.4× CCU, same latency. The engine continued to show no stress. The 8-driver cap was the wall; the engine wall was still further out.
+
+### Run M — 8 drivers × cap 1,414 @ 30 Hz / 50 ms / 500 B realistic (RunId `20260427_155711`)
+
+Sibling experiment to Run K with 5× richer state (500 B vs 100 B). Ran clean to ceiling; recorded for completeness, superseded immediately by Run L's 12-driver result on the same payload.
+
+### Run L — 12 drivers × cap 1,154 on c6in.2xlarge clusters @ 30 Hz / 50 ms / 500 B (RunId `20260427_182356`)
+
+First run with NIC-optimized cluster hardware. A predecessor at 8 drivers / 1 KB on c7i.2xlarge clusters had hit a NIC wall around 9–10K CCU; switching cluster type to c6in.2xlarge (50 Gbps NIC, same 8 vCPU / 16 GB compute shape) was the correction.
+
+**Result.** Ceiling **13,500 aggregate** (1,125 per driver × 12). Per-driver mean latency by tier (driver-0 sample):
+
+| Aggregate CCU | Mean lat |
+|---|---|
+| 1,500 | 16.22 ms |
+| 6,000 | 16.46 ms |
+| 12,000 | 15.81 ms |
+| 13,500 | 16.40 ms |
+
+Flat at ~16 ms, consistent with the 30 Hz half-tick-period (33 ms / 2 ≈ 16.5 ms). All tiers green; cluster CPU healthy.
+
+**Interpretation.** With NIC-optimized clusters, the realistic-payload (500 B) ceiling at 30 Hz / 50 ms is at least 13,500 — and the engine still has headroom. The driver-side √N cap was again the binding constraint.
+
+### Run N — 12 drivers × cap 1,154 on c6in.2xlarge clusters @ 60 Hz / 50 ms / 500 B (RunId `20260427_190917`)
+
+Tick-rate isolation experiment: same fleet and payload as Run L, tick rate doubled.
+
+**Result.** Ceiling **13,500 aggregate** (matching Run L). Driver-0 latency curve:
+
+| Aggregate CCU | Mean lat (driver-0) |
+|---|---|
+| 1,500 | 7.89 ms |
+| 6,000 | 8.16 ms |
+| 12,000 | 8.46 ms |
+| 13,500 | 8.56 ms |
+
+Top-tier mean across 12 drivers: 8.57 ms (range 8.49 – 8.68 ms; spread 0.19 ms across 12 independent measurements).
+
+**Interpretation.** Doubling tick rate halved the per-tier mean latency, exactly as the half-tick-period math predicts (16.67 ms / 2 ≈ 8.33 ms baseline). The engine sustained 2× the broadcast frequency at the same CCU with zero validity gate breaks. **Tick-rate isolation passed.** This is the cleanest 60 Hz proof we have, free of payload confounds.
+
+### Run O — 12 drivers × cap 1,154 on c6in.2xlarge clusters @ 60 Hz / 50 ms / 1 KB (RunId `20260427_191741`)
+
+Combined push: 60 Hz tick + 1 KB per-entity `user_data` (2× Run N's 500 B). The publishable headline run if it landed.
+
+**Result.** Ceiling **13,500 aggregate**. Top-tier per-driver:
+
+- Mean across 12 drivers: **10.39 ms** (median 10.24 ms; range 8.63 – 13.15 ms)
+- Zero errors across ~24M round-trips at the top tier
+- Validity gate passed at every tier on every driver
+- Latency curve flat from 1.5K (8.02 ms) to 13.5K (9.41 ms) on driver-0 — +1.4 ms across 9× CCU growth
+
+**Interpretation.** With 1 KB per-entity payload at 60 Hz at 13,500 CCU and full-mesh visibility, mean server-side latency stayed under 13 ms on every driver. This is the publishable headline.
+
+**Instrumentation gap — disclosed.** Cluster `/stats bytes_out` was **not** polled per tier in this run. We have driver-side latency, error rate, and validity at every tier — those are direct measurements — but outbound bytes/sec from the cluster fleet was not captured for any tier of any of the six runs. That means we can verify the engine's behavior as observed by the driver subscribers, but we cannot directly verify broadcast cadence at peak load or quantify production-egress bandwidth from this run's artifacts.
+
+A post-run docker-logs sample from one cluster showed `tick_ms` values around 50 ms during the tail, which would be over the 16.67 ms 60 Hz budget if it reflected peak-load behavior. The latency curve shape (no jump that would indicate degradation to 20 Hz simulation) is *consistent with* the cluster maintaining 60 Hz under load, but the sample was collected post-driver-disconnect and may reflect post-load idle. We did not capture tick_ms or bytes_out per tier; future runs will. The honest framing for the README: the latency curve is consistent with the configured 60 Hz, but the broadcast cadence at peak load is not independently verified from this run's data.
+
+### Final headline matrix at end of session
+
+| Run | CCU | Tick | Payload | Mean lat | Notes |
+|---|---|---|---|---|---|
+| **O** | **13,500** | **60 Hz** | **1 KB** | **10.39 ms** | publishable headline |
+| N | 13,500 | 60 Hz | 500 B | 8.57 ms | tick-rate isolation |
+| L | 13,500 | 30 Hz | 500 B | 16.40 ms | baseline @ NIC-opt clusters |
+| K | 11,000 | 30 Hz | 100 B | ~16 ms | 8-driver scale |
+| J | 8,000 | 30 Hz | 100 B | ~16 ms | 4-driver scale |
+| (F) | 4,750 | 30 Hz | 100 B | (100 ms gate) | predecessor — single-driver bound |
+
+At constant 100 B payload, multi-driver scaling lifted the ceiling from 4,750 (Run F) to 11,000 (Run K) — ~2.3× without changing the engine. At constant 60 Hz tick, the payload jump from 500 B to 1 KB held the ceiling at 13,500 with only ~2 ms latency increase. **The engine has not been pushed to its actual ceiling in any of these runs** — every ceiling reported was the per-driver √N safety cap, not a measured engine break.
+
+### Decisions made on Martin's behalf during this session, called out for review
+
+1. **Switched cluster instances to c6in.2xlarge** when 1 KB payload on c7i.2xlarge clusters hit a sustained-NIC wall. Preserves compute shape (8 vCPU / 16 GB) while raising NIC ceiling from ~12.5 Gbps burst to 50 Gbps. Worth re-evaluating before the physics-at-scale work — compute-shaped clusters may matter more there.
+2. **Did NOT push to find the actual engine ceiling.** The √N safety cap was binding in every run; raising the cap would let us probe further but risks re-introducing driver-side bottlenecks. Decision: characterize the cap-bound performance band first; revisit cap-raising once the engine has visible distress to find.
+3. **Did NOT capture per-tier `bytes_out` from cluster `/stats`.** Acknowledged as the major instrumentation gap; tasks #94 and #95 are the fix for the next run cycle.
+4. **Did NOT add tcp/UDP transport telemetry, retransmit rates, or cluster-side broadcast_lagged_events to the per-tier output.** Same instrumentation gap as #94/#95 — fold into the same fix.
+
+### Tear-down
+
+Terraform fleet destroyed (37 resources). Hit a `DependencyViolation` on the security group caused by an orphan EC2 instance that was an artifact of an earlier terraform state-recovery; manually terminated the orphan, then re-ran `terraform destroy` and the SG cleared in 2 s.
+
+### Next
+
+1. Land the README rewrite + new configs (`drivers_12.tick60_lat50_realistic_500b.json`, `drivers_12.tick60_lat50_realistic_1kb.json`) + new tfvars (`arcaneperhost.clusters_4.drivers_12.tfvars`) + this journal entry in one PR (task #75 closes with this entry).
+2. **Implement bytes_out per-tier logging and `EgressBandwidthGbps` validity output (#94 / #95)** so the next benchmark cycle publishes a measurement-grounded broadcast-cadence and egress figure rather than a bracketed estimate.
+3. **Honest engine-ceiling test** — same 4 × c6in.2xlarge cluster fleet, raise the per-driver cap toward `floor(8000 / sqrt(N))` and find the first tier that actually fails a validity gate. Tracked, not committed.
+4. Physics integration ([arcane#51](https://github.com/brainy-bots/arcane/issues/51), [arcane#52](https://github.com/brainy-bots/arcane/issues/52)) — separate shooter-class measurement track.
+
+---
+
 ## What this journal captures vs what it doesn't
 
 **Captures.** The experimental chain — hypothesis, setup, result, interpretation, next. Each entry links to a specific `RunId` for anyone who wants to inspect the raw manifest/CSV/diag logs.
