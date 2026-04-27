@@ -1,5 +1,9 @@
 # Arcane — scaling benchmark
 
+This repository is the public scaling benchmark for [**Arcane**](https://github.com/brainy-bots/arcane) — a Rust multiplayer game backend engine that partitions server authority across N cluster nodes by predicted player-interaction probability rather than by spatial zoning. The benchmark measures the headline properties Arcane is designed to deliver, end-to-end on commodity AWS hardware: **how many concurrent players** can be sustained, **at what server tick rate**, with **how much per-entity replication state**, and **at what server-side latency**.
+
+The result below is reproducible from scratch by any reader with an AWS account in **~25 minutes** using a pre-built public Docker image — no compilation step required.
+
 > **13,500 concurrent players at 60 Hz with 1 KB of per-entity state, 10.4 ms mean server-side latency, on commodity AWS hardware.**
 
 ## The claim
@@ -8,7 +12,7 @@
 |---|---|
 | Concurrent players (CCU) | **13,500** |
 | Server tick / broadcast rate | **60 Hz** (16.67 ms per tick) |
-| Per-entity payload | **1,000 bytes** opaque `user_data` per entity, included whenever the entity is in the broadcast delta (see "What the workload actually does" below for the dead-reckoning detail) |
+| Per-entity payload | **1,000 bytes** opaque `user_data` per entity, included whenever the entity is in the broadcast delta (see [What the workload actually does](#what-the-workload-actually-does) for the dead-reckoning detail) |
 | Mean server-side latency | **10.39 ms** (median 10.24 ms; range across 12 independent drivers: 8.63 – 13.15 ms) |
 | Latency category | **< 20 ms server-side**, every driver, every tier |
 | Error rate at top tier | **0.000 %** (0 errors / ~24,000,000 round-trips) |
@@ -19,22 +23,7 @@
 | Simulation | Kinematic motion + radius-collision (no rigid-body physics) |
 | Run ID | `20260427_191741` |
 
-### Latency curve (driver-0 sample)
-
-| Aggregate CCU | Mean latency |
-|---|---|
-| 1,500 | 8.02 ms |
-| 6,000 | 8.55 ms |
-| 12,000 | 8.52 ms |
-| **13,500** | **9.41 ms** |
-
-+1.4 ms across 9× CCU growth. **The engine is not at its ceiling.** 1125 per driver is the √N driver-safety cap that prevents a single load generator from becoming the bottleneck — not a measured engine break.
-
-### What "server-side latency" measures, exactly
-
-The driver records a wall-clock timestamp when it sends an outbound action (a `seq_id`-tagged WebSocket message), and another wall-clock timestamp when it receives the next server broadcast frame whose ack-list contains that `seq_id`. The reported `lat_avg_ms` is the mean of those deltas across every action the driver sent during the 30 s steady-state phase of a tier.
-
-That measurement includes: cluster ingest, action processing in the simulation tick, broadcast encoding, network transit driver-side, and any kernel-level scheduling on either side. It does **not** include public-internet RTT — the swarm is in the same VPC as the cluster fleet, so this is a server-side latency floor. Add typical regional internet RTT (30–60 ms) for an end-to-end perceived figure.
+*The engine is not at its ceiling.* 1,125 per driver is the √N driver-safety cap that prevents a single load generator from becoming the bottleneck — not a measured engine break. Latency stayed essentially flat across the entire ramp; the full curve and methodology are in [Detailed description](#detailed-description) below.
 
 ---
 
@@ -86,6 +75,29 @@ terraform destroy -var-file=arcaneperhost.clusters_4.drivers_12.tfvars -auto-app
 **Total cost of one full reproduction: ~$5** on AWS on-demand pricing.
 
 ---
+
+# Detailed description
+
+Everything below is the careful, technical version of the headline above. If the table was enough for your decision, you can stop here. If you want to verify the claim, evaluate Arcane for your own use case, or read the methodology in detail, keep going.
+
+## Latency curve
+
+driver-0 sample, ramp from 125 to 1,125 players-per-driver (1.5K → 13.5K aggregate CCU):
+
+| Aggregate CCU | Mean latency |
+|---|---|
+| 1,500 | 8.02 ms |
+| 6,000 | 8.55 ms |
+| 12,000 | 8.52 ms |
+| **13,500** | **9.41 ms** |
+
++1.4 ms across 9× CCU growth. The engine is not under stress at the top tier — the run terminated at the configured per-driver safety cap (`floor(4000 / sqrt(12)) = 1,154`), not at an engine break.
+
+## What "server-side latency" measures, exactly
+
+The driver records a wall-clock timestamp when it sends an outbound action (a `seq_id`-tagged WebSocket message) and another wall-clock timestamp when it receives the next server broadcast frame whose ack-list contains that `seq_id`. The reported `lat_avg_ms` is the mean of those deltas across every action the driver sent during the 30 s steady-state phase of a tier.
+
+That measurement includes: cluster ingest, action processing in the simulation tick, broadcast encoding, network transit driver-side, and any kernel-level scheduling on either side. It does **not** include public-internet RTT — the swarm is in the same VPC as the cluster fleet, so this is a server-side latency floor. Add typical regional internet RTT (30–60 ms) for an end-to-end perceived figure.
 
 ## What the workload actually does
 
