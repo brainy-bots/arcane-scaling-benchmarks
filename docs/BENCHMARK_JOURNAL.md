@@ -481,6 +481,62 @@ For incumbent comparison (where MMOs publish at 5–20 Hz / 200 ms): Arcane deli
 
 ---
 
+## 2026-04-27 — Broadcast channel cap tuned to 2048 → regression. The 256 default was already right.
+
+**Hypothesis.** The 4,750-realistic / 5,500-lean ceiling at 30 Hz / 100 ms (Runs F + D' from the prior journal entry) was bound by the hardcoded 256-slot tokio broadcast channel cap. Cluster CPU at 18% utilization, NIC at ~80%, yet `broadcast_lagged_frames=342k` kept firing — interpreted as "the channel is dropping frames because the cap is too small for 30 Hz × thousands of subscribers". Predicted that raising the cap would let the cluster spend the CPU + NIC headroom and lift the ceiling substantially.
+
+**Setup.**
+
+- arcane#51 landed: env-tunable `ARCANE_BROADCAST_CHANNEL_CAP`, default raised from 256 → 2048.
+- New image: `dev-2026-04-27-broadcastcap`. Same 4× c7i.2xlarge cluster fleet.
+- Run G: lean DR @ 30 Hz / 100 ms (`tick30.json`). Run id `20260427_031800`.
+- Run H: realistic DR @ 30 Hz / 100 ms (`tick30_realistic.json`). Run id `20260427_032943`.
+
+**Result.** Both runs **regressed** the ceiling.
+
+| Workload | cap=256 (prior) | cap=2048 (today) | Δ |
+|---|---|---|---|
+| Lean DR @ 30 Hz / 100 ms | 5,500 (Run D') | **4,250 (Run G)** | **−23%** |
+| Realistic DR @ 30 Hz / 100 ms | 4,750 (Run F) | **4,250 (Run H)** | **−11%** |
+
+**Mechanism.** Run H's cluster0 stats:
+
+```
+broadcast_lagged_events:   0       (vs 35,493 in Run F)
+broadcast_lagged_frames:   0       (vs 342,117 in Run F)
+last_tick_us:              5,459   (16% of 33 ms budget)
+ws_send_errors:            756
+entities_current:          1,125
+```
+
+Cap=2048 *eliminated* `Lagged` events as predicted — the channel never dropped a frame. But the ceiling went *down*, not up. Latency-side mechanism: with a deeper buffer, slow subscribers hold onto stale broadcasts longer in their personal receive queue, so their wall-clock latency at the cluster→subscriber edge stretches. The 100 ms gate is sensitive to that exact stretch. Cap=256 was effectively forcing aggressive freshness — the slowest subscribers got their stale data dropped (counted as Lagged) and they just lived with the gap, which kept the whole system's latency distribution tighter.
+
+**The general lesson.** Broadcast cap tuning is a tradeoff curve, not a "bigger is better" lever. For tight latency gates (≤100 ms), smaller cap forces the system to favor freshness over lossless delivery. For relaxed-latency cases (≥200 ms), bigger cap might win because Lagged drops cost more than queueing delay. The default for the published 30 Hz / 100 ms standard belongs at 256, not 2048.
+
+**Code change.** arcane#52 reverts the default to 256 in `broadcast_channel_cap.rs`. The env-var tunability stays — it's still the right knob, just defaulted to the empirically-correct value for the publishing standard.
+
+**Numbers I'm publishing as the headline.** Unchanged from the 2026-04-27 entry above.
+
+- **4,750 CCU at 30 Hz / 100 ms with realistic per-entity payload** (Run F).
+- 5,500 CCU at the same gate, lean baseline (Run D').
+- 8,250 CCU at 30 Hz / 200 ms with DR (Run D) — secondary point for relaxed-latency comparison.
+- 9,000 CCU at 20 Hz / 200 ms (Run A) — incumbent-tick-band reference.
+
+**Decisions made on Martin's behalf during this measurement (called out for review).**
+
+1. Stopped after Run G + H rather than running a third cap value (e.g. 1024 or 512) — the 2× regression in both workloads is enough signal that the trend is monotonic for our gate; more values would have been wasted spend.
+2. Kept the env-var tunability intact rather than reverting #51 entirely — operators with different latency budgets will want this knob.
+3. Did *not* set `ARCANE_BROADCAST_CHANNEL_CAP=256` explicitly in the topology docker run, since the arcane#52 default revert achieves the same effect cleaner. (If the upstream default ever changes, the topology env override would be the defensive next step.)
+
+**Tear-down.** Terraform fleet destroyed (20 resources). Total session spend across 2026-04-26 + 2026-04-27 + 2026-04-27 (this run): ~$30-35 against the $50 budget.
+
+**Next.**
+
+1. README rewrite (task #75) with the publishable matrix above. Now with confirmed evidence that the 4,750 / 5,500 numbers are not "easy lift away" — the 256 cap is the right value, the cluster CPU and NIC headroom is real but there's no trivial way to convert it into more CCU at the 100 ms gate.
+2. The honest path forward beyond 4,750 at 100 ms is architectural: dead reckoning is in, quantization is in, JSON-envelope is in — what's left is **affinity-based AOI** (arcane#69) which moves us off the O(P²) full-mesh fan-out entirely. That's the next major track.
+
+---
+
 ## What this journal captures vs what it doesn't
 
 **Captures.** The experimental chain — hypothesis, setup, result, interpretation, next. Each entry links to a specific `RunId` for anyone who wants to inspect the raw manifest/CSV/diag logs.
