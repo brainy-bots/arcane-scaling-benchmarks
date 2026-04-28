@@ -2,9 +2,8 @@ locals {
   is_stonly = var.topology == "AwsSpacetimeOnly"
   is_arph   = var.topology == "AwsArcanePerHost"
 
-  # Stable pick: AWS returns subnet ids in arbitrary order; sort avoids churn if the API order changes.
-  subnet_id = var.subnet_id != "" ? var.subnet_id : sort(data.aws_subnets.default[0].ids)[0]
-  vpc_id    = var.subnet_id != "" ? data.aws_subnet.selected[0].vpc_id : data.aws_vpc.default[0].id
+  subnet_id = var.subnet_id != "" ? var.subnet_id : aws_subnet.bench[0].id
+  vpc_id    = var.subnet_id != "" ? data.aws_subnet.selected[0].vpc_id : aws_vpc.bench[0].id
 
   account_id = data.aws_caller_identity.current.account_id
   region_lc  = lower(var.aws_region)
