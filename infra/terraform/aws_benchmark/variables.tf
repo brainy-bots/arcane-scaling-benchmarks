@@ -100,7 +100,7 @@ variable "remote_provision_profile" {
 
 variable "subnet_id" {
   type        = string
-  description = "Leave empty to use the first subnet in the default VPC."
+  description = "Leave empty to use the stack-created VPC and subnet. Set to a specific subnet ID to place instances in an existing subnet instead."
   default     = ""
 }
 
