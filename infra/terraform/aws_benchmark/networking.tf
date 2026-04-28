@@ -4,8 +4,10 @@ data "aws_availability_zones" "available" {
 }
 
 resource "aws_vpc" "bench" {
-  count      = var.subnet_id == "" ? 1 : 0
-  cidr_block = "10.0.0.0/24"
+  count                = var.subnet_id == "" ? 1 : 0
+  cidr_block           = "10.0.0.0/24"
+  enable_dns_support   = true  # Preserve default VPC behavior (required for DNS resolution)
+  enable_dns_hostnames = true  # Preserve default VPC behavior (enables EC2 public DNS hostnames)
 
   tags = {
     Name      = "arcane-bench-tf"
