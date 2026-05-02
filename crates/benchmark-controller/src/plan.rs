@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level plan: identification + ordered phases.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TestPlan {
     pub plan: PlanMeta,
     pub phases: Vec<Phase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PlanMeta {
     pub name: String,
     #[serde(default)]
@@ -21,6 +23,7 @@ pub struct PlanMeta {
 
 /// One phase: target player count, ramp pacing, hold duration, optional gate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Phase {
     pub name: String,
     pub target_players: u32,
@@ -32,6 +35,7 @@ pub struct Phase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PhaseGate {
     /// Per-phase maximum p99 latency in milliseconds.
     #[serde(default)]
@@ -45,7 +49,15 @@ pub struct PhaseGate {
     pub min_entities: Option<u64>,
 }
 
-/// Parse a TOML test plan from a string. Implementation lands in #77.
-pub fn parse(_toml_text: &str) -> Result<TestPlan, String> {
-    unimplemented!("#77: parse TOML test plan — see tests/plan.rs")
+/// Parse a TOML test plan. Unknown top-level or per-section keys are
+/// rejected so configuration typos surface immediately rather than being
+/// silently ignored.
+pub fn parse(toml_text: &str) -> Result<TestPlan, String> {
+    toml::from_str::<TestPlan>(toml_text).map_err(|e| e.to_string())
+}
+
+/// Serialize a plan back to TOML. Used for round-trip stability tests and
+/// for stamping the resolved plan into the run manifest.
+pub fn serialize(plan: &TestPlan) -> Result<String, String> {
+    toml::to_string(plan).map_err(|e| e.to_string())
 }
