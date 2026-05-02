@@ -1,16 +1,152 @@
 //! `benchmark-controller` binary entry point.
 //!
-//! Wires together the controller's components: load plan → connect to
-//! orchestrator → start results writer → run scheduler → emit manifest.
+//! Drives the swarm orchestrator through a TOML test plan:
+//!   - Connects to the orchestrator's HTTP API for command submission
+//!   - Subscribes to its telemetry SSE for the validity gate
+//!   - Writes per-phase results + a run manifest to a local directory
+//!     (and to S3 if an `--s3-bucket` is given)
 //!
-//! Real wiring lands as the component PRs land (#77 through #81). For now
-//! the binary just prints help / exits — the crate is published so the
-//! rest of the toolchain can depend on it.
+//! Usage:
+//!   benchmark-controller \
+//!     --plan ./plans/headline-13500.toml \
+//!     --orchestrator-url http://10.0.1.5:8090 \
+//!     --results-dir ./results \
+//!     [--submitter <id>] \
+//!     [--s3-bucket <name> --s3-prefix <prefix>]
+//!
+//! Exit code: 0 on overall Pass, 1 on overall Fail (or any error).
 
-fn main() {
+use benchmark_controller::results::Uploader;
+use benchmark_controller::results::{NoopUploaderExt, S3Uploader};
+use benchmark_controller::run::{run, RunConfig, RunOutcome};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+fn print_usage() {
     eprintln!(
-        "benchmark-controller: scaffold only. Component implementations land in \
-         arcane-scaling-benchmarks issues #77 (TOML schema), #78 (scheduler), \
-         #79 (gate), #80 (results writer), #81 (harness shrink)."
+        "usage: benchmark-controller \\
+        --plan <plan.toml> \\
+        --orchestrator-url <http://host:port> \\
+        --results-dir <dir> \\
+        [--submitter <id>] \\
+        [--s3-bucket <name> --s3-prefix <prefix>]"
     );
+}
+
+#[tokio::main]
+async fn main() {
+    let mut plan: Option<PathBuf> = None;
+    let mut url: Option<String> = None;
+    let mut results_dir: Option<PathBuf> = None;
+    let mut submitter: String = format!("benchmark-controller-{}", std::process::id());
+    let mut s3_bucket: Option<String> = None;
+    let mut s3_prefix: Option<String> = None;
+
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--plan" => {
+                i += 1;
+                plan = Some(PathBuf::from(&args[i]));
+            }
+            "--orchestrator-url" => {
+                i += 1;
+                url = Some(args[i].clone());
+            }
+            "--results-dir" => {
+                i += 1;
+                results_dir = Some(PathBuf::from(&args[i]));
+            }
+            "--submitter" => {
+                i += 1;
+                submitter = args[i].clone();
+            }
+            "--s3-bucket" => {
+                i += 1;
+                s3_bucket = Some(args[i].clone());
+            }
+            "--s3-prefix" => {
+                i += 1;
+                s3_prefix = Some(args[i].clone());
+            }
+            "-h" | "--help" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let cfg = match (plan, url, results_dir) {
+        (Some(plan), Some(url), Some(rd)) => RunConfig {
+            plan_path: plan,
+            orchestrator_base_url: url,
+            results_dir: rd,
+            submitter,
+        },
+        _ => {
+            print_usage();
+            std::process::exit(2);
+        }
+    };
+
+    let uploader: Arc<dyn UploaderObj> = match s3_bucket {
+        Some(bucket) => {
+            let prefix = s3_prefix.unwrap_or_default();
+            Arc::new(S3Uploader::new(bucket, prefix))
+        }
+        None => Arc::new(NoopUploaderExt),
+    };
+    // We need an Uploader trait object; thread it into run via a shim that
+    // calls the right concrete uploader.
+    let outcome = run_with_uploader(cfg, uploader).await;
+    match outcome {
+        Ok(RunOutcome { overall, .. }) => {
+            eprintln!("benchmark-controller: overall = {:?}", overall);
+            if matches!(overall, benchmark_controller::results::OverallOutcome::Pass) {
+                std::process::exit(0);
+            } else {
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("benchmark-controller: error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+trait UploaderObj: Send + Sync {
+    fn upload_box<'a>(
+        &'a self,
+        key: String,
+        body: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+}
+
+impl<U: Uploader + 'static> UploaderObj for U {
+    fn upload_box<'a>(
+        &'a self,
+        key: String,
+        body: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(self.upload(key, body))
+    }
+}
+
+struct UploaderObjAdapter(Arc<dyn UploaderObj>);
+impl Uploader for UploaderObjAdapter {
+    async fn upload(&self, key: String, body: Vec<u8>) -> Result<(), String> {
+        self.0.upload_box(key, body).await
+    }
+}
+
+async fn run_with_uploader(
+    cfg: RunConfig,
+    uploader: Arc<dyn UploaderObj>,
+) -> Result<RunOutcome, String> {
+    let adapter = Arc::new(UploaderObjAdapter(uploader));
+    run(cfg, adapter).await
 }

@@ -1,0 +1,45 @@
+# Headline benchmark: 13,500 CCU across 4 clusters.
+# Drives the orchestrator through warmup → ramp → steady-state.
+
+[plan]
+name = "headline-13500"
+description = "13,500 CCU headline benchmark across 4 clusters @ 30 Hz"
+
+# ---------------------------------------------------------------------------
+# Phase 1: warmup. Bring the fleet to a small steady state to verify the
+# pipeline (drivers connecting, clusters polling). No strict latency gate
+# during warmup; the gate is just "we have entities."
+# ---------------------------------------------------------------------------
+[[phases]]
+name = "warmup"
+target_players = 1000
+spawn_delay_ms = 50
+hold_seconds = 60
+
+[phases.gate]
+min_entities = 800
+
+# ---------------------------------------------------------------------------
+# Phase 2: ramp to headline. Spawn-delay is tightened so the join rate
+# doesn't dominate the ramp window. Steady-state hold at 13,500 CCU.
+# Latency gate enforced.
+# ---------------------------------------------------------------------------
+[[phases]]
+name = "ramp-to-13500"
+target_players = 13500
+spawn_delay_ms = 25
+hold_seconds = 600
+
+[phases.gate]
+max_p99_latency_ms = 100
+min_entities = 13000
+
+# ---------------------------------------------------------------------------
+# Phase 3: cooldown. Soft tear-down so the orchestrator and clusters can
+# settle before terraform destroy. No gate.
+# ---------------------------------------------------------------------------
+[[phases]]
+name = "cooldown"
+target_players = 0
+spawn_delay_ms = 25
+hold_seconds = 30

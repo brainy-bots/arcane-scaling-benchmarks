@@ -7,9 +7,12 @@
 //! follow-up PRs.
 
 pub mod gate;
+pub mod orchestrator_client;
 pub mod plan;
 pub mod results;
+pub mod run;
 pub mod scheduler;
+pub mod sse_consumer;
 
 #[cfg(test)]
 mod tests {
