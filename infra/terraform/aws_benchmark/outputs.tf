@@ -28,9 +28,20 @@ locals {
     ArphDriverCount      = local.is_arph ? var.arph_driver_count : 0
     RedisInstanceId      = local.is_arph ? try(aws_instance.arph_redis[0].id, null) : null
     ManagerInstanceId    = local.is_arph ? try(aws_instance.arph_manager[0].id, null) : null
+    ManagerPublicDns     = local.is_arph ? try(aws_instance.arph_manager[0].public_dns, null) : null
+    ManagerPublicIp      = local.is_arph ? try(aws_instance.arph_manager[0].public_ip, null) : null
+    ManagerPrivateIp     = local.is_arph ? try(aws_instance.arph_manager[0].private_ip, null) : null
     ClusterInstanceIds   = local.is_arph ? [for i in aws_instance.arph_cluster : i.id] : []
+    ClusterPrivateIps    = local.is_arph ? [for i in aws_instance.arph_cluster : i.private_ip] : []
     ClusterIds           = local.is_arph ? [for u in random_uuid.cluster : u.result] : []
     MaxArcaneClusters    = local.is_arph ? var.arcane_cluster_count : 0
+    # Orchestrator endpoint — the benchmark-controller (operator's laptop)
+    # connects here for command submission + telemetry SSE. The orchestrator
+    # process runs on the manager EC2 alongside arcane-manager. Drivers reach
+    # it via ManagerPrivateIp + OrchestratorDriverPort over the VPC.
+    OrchestratorPublicDns  = local.is_arph ? try(aws_instance.arph_manager[0].public_dns, null) : null
+    OrchestratorHttpPort   = 8090
+    OrchestratorDriverPort = 8088
   }
 }
 

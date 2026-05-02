@@ -57,6 +57,18 @@ RUN cargo build --release --manifest-path crates/benchmark-cluster/Cargo.toml \
 RUN cargo build --release --manifest-path arcane_swarm/Cargo.toml \
       --package arcane-swarm --bin arcane-swarm
 
+# arcane-swarm-orchestrator: standalone orchestrator process. Drivers connect
+# to it via WebSocket; controllers submit commands via HTTP POST and consume
+# its telemetry SSE.
+RUN cargo build --release --manifest-path arcane_swarm/Cargo.toml \
+      --package arcane-swarm-orchestrator --bin arcane-swarm-orchestrator
+
+# benchmark-controller: drives the orchestrator from a TOML test plan.
+# Operators normally run this from a laptop, but baking it into the image
+# lets us also run it on EC2 for cloud-side reproducibility tests.
+RUN cargo build --release --manifest-path crates/benchmark-controller/Cargo.toml \
+      --bin benchmark-controller
+
 # Benchmark WASM modules for the two SpacetimeDB modes. Built with `spacetime build`
 # so the output matches what the SpacetimeDB runtime expects to load.
 RUN spacetime build --module-path crates/benchmark-spacetimedb-full
@@ -85,6 +97,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /build/arcane/target/release/arcane-manager                                         /usr/local/bin/arcane-manager
 COPY --from=builder /build/crates/benchmark-cluster/target/release/benchmark-cluster                    /usr/local/bin/benchmark-cluster
 COPY --from=builder /build/arcane_swarm/target/release/arcane-swarm                                     /usr/local/bin/arcane-swarm
+COPY --from=builder /build/arcane_swarm/target/release/arcane-swarm-orchestrator                        /usr/local/bin/arcane-swarm-orchestrator
+COPY --from=builder /build/crates/benchmark-controller/target/release/benchmark-controller              /usr/local/bin/benchmark-controller
 
 # WASM modules — stable paths consumed by benchmark-publish-module below.
 COPY --from=builder /build/crates/benchmark-spacetimedb-full/target/wasm32-unknown-unknown/release/benchmark_spacetimedb_full.wasm        /opt/modules/benchmark_spacetimedb_full.wasm
