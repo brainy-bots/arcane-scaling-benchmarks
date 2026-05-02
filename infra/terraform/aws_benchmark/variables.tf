@@ -115,3 +115,9 @@ variable "s3_bucket_force_destroy" {
   description = "When true, terraform destroy can delete a non-empty artifact bucket. Leave true so destroy always tears down cleanly for reproducibility."
   default     = true
 }
+
+variable "operator_cidr_blocks" {
+  type        = list(string)
+  description = "CIDR blocks allowed to reach the orchestrator's HTTP API (port 8090) on the manager EC2. The benchmark controller runs from the operator's laptop and connects over the public internet to this endpoint. Empty list = no external access (orchestrator is internal-only). Set to your laptop's public IP /32 for a controller run."
+  default     = []
+}

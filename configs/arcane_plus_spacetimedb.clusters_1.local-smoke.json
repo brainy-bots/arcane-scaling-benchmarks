@@ -1,0 +1,75 @@
+{
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  arcane_plus_spacetimedb — 1-cluster LOCAL SMOKE.
+  //
+  //  Single 100-player tier for 30 seconds against a single cluster on the
+  //  operator's laptop. Sole purpose: validate that the entire benchmark
+  //  pipeline (Redis + SpacetimeDB + Arcane manager + 1 cluster + 1 driver)
+  //  runs cleanly and emits non-zero metrics — same workload knobs as the
+  //  4-cluster cloud headline (60 Hz, 1 KB user_data, burst profile) but
+  //  scaled down to laptop resources.
+  //
+  //  This is NOT a published benchmark number. It exists so we can iterate
+  //  on the code path without spending AWS money. The headline 13,500 CCU /
+  //  10.4 ms latency number requires the AWS fleet (4 c6in.2xlarge clusters
+  //  + 12 c6in.4xlarge drivers in the same VPC).
+  //
+  //  Loosened thresholds so a marginal local run doesn't fail the smoke;
+  //  we only want to catch wiring failures.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  "BenchmarkMode":      "ArcanePlusSpacetime",
+  "ArcaneClusterCount": 1,
+  "SpacetimeModule":    "benchmark-spacetimedb-persist",
+  "PhysicsEngine":      "kinematic",
+
+  // Same tick rate + payload as the headline so the per-tick wire shape is
+  // identical to the published number. Local resources won't sustain it at
+  // 13,500 players, but the 100-player floor exercises the same code path.
+  "ClusterTickRateHz":  60,
+  "UserDataBytes":      1000,
+
+  "SpacetimeHost":  "http://127.0.0.1:3000",
+  "DatabaseName":   "arcane",
+  "RedisHost":      "127.0.0.1",
+  "RedisPort":      6379,
+
+  "ArcaneManagerHost":       "127.0.0.1",
+  "ArcaneManagerPort":       8081,
+  "ArcaneClusterHosts":      [],
+  "ArcaneClusterBasePort":   8090,
+  "ArcaneClusterPortStride": 1,
+
+  // Single 100-player tier — fast to iterate on; enough load to exercise
+  // the broadcast pipeline.
+  "ArcaneCeilingStartPlayers": 100,
+  "ArcaneCeilingStep":         100,
+  "ArcaneCeilingMaxPlayers":   100,
+  "DurationSeconds":           30,
+
+  "SpacetimePersistHz": 1,
+  "PersistBatchSize":   0,
+
+  // Loose gates — wiring check, not a measurement.
+  "MaxErrRate":   0.10,
+  "MaxLatencyMs": 500,
+
+  // Canonical workload knobs (same as headline).
+  "ActionsPerSec":            2,
+  "ReadRateHz":               5,
+  "SwarmMode":                "spread",
+  "BetweenIncrementsSeconds": 1,
+  "InterSpawnDelayMs":        8,
+
+  "DriverCount": 1,
+
+  "MaxPlayersPerDriver": 200,
+
+  "BurstEnabled":          true,
+  "BurstPeriodSecs":       30,
+  "BurstCohortPercent":    20,
+  "BurstActionsPerPlayer": 10,
+  "BurstWindowMs":         500,
+  "ZoneEventPeriodSecs":   30,
+  "ZoneEventWindowMs":     500
+}
