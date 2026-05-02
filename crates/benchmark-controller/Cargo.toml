@@ -1,0 +1,24 @@
+[package]
+name = "benchmark-controller"
+version = "0.1.0"
+edition = "2021"
+description = "Benchmark controller — owns phase logic, ramp schedule, validity gates, and per-phase results. Drives the swarm orchestrator over WebSocket; subscribes to its telemetry SSE."
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "benchmark-controller"
+path = "src/bin/benchmark_controller.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net", "time", "fs", "io-util"] }
+tokio-tungstenite = "0.21"
+futures = "0.3"
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Shared wire schema with the orchestrator (DriverMessage / OrchestratorResponse /
+# OrchestratorCommand / CommandAck / TelemetrySnapshot).
+arcane-swarm-orchestrator = { path = "../../arcane_swarm/crates/arcane-swarm-orchestrator" }
