@@ -3,9 +3,14 @@
 //! Drives the orchestrator through a `TestPlan`'s phase sequence by issuing
 //! `SetSpawnDelayMs` (when it changes) and `SetPlayers` commands, then
 //! holding for `phase.hold_seconds` (or aborting early if the validity gate
-//! signals fail). Emits `Stop` after the last phase.
+//! signals fail). Emits `Stop` after the last phase or on any abort.
 
 use crate::plan::TestPlan;
+use arcane_swarm_orchestrator::protocol::{
+    OrchestratorCommand, SetPlayersCommand, SetSpawnDelayMsCommand,
+};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Reasons a scheduler run terminated.
@@ -25,7 +30,7 @@ pub enum SchedulerOutcome {
 pub trait OrchestratorClient: Send + Sync {
     fn submit(
         &self,
-        command: arcane_swarm_orchestrator::protocol::OrchestratorCommand,
+        command: OrchestratorCommand,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send;
 }
 
@@ -50,6 +55,10 @@ pub struct RampScheduler<C: OrchestratorClient + 'static, G: GateSignal + 'stati
     pub gate: G,
     /// Wall-clock check interval for the gate during a hold.
     pub gate_poll_interval: Duration,
+    /// Manual-abort signal. The operator (SIGINT handler, test code) sets
+    /// this to true to short-circuit the run; the scheduler emits Stop and
+    /// returns `SchedulerOutcome::Manual`.
+    pub abort: Arc<AtomicBool>,
 }
 
 impl<C: OrchestratorClient + 'static, G: GateSignal + 'static> RampScheduler<C, G> {
@@ -59,11 +68,90 @@ impl<C: OrchestratorClient + 'static, G: GateSignal + 'static> RampScheduler<C, 
             client,
             gate,
             gate_poll_interval: Duration::from_secs(2),
+            abort: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Drive the plan from phase 0 to the end. Implementation lands in #78.
+    pub fn with_gate_poll_interval(mut self, d: Duration) -> Self {
+        self.gate_poll_interval = d;
+        self
+    }
+
+    /// Get a clone of the abort flag so an external SIGINT handler (or test)
+    /// can signal manual abort.
+    pub fn abort_handle(&self) -> Arc<AtomicBool> {
+        self.abort.clone()
+    }
+
+    /// Drive the plan from phase 0 through the end. Returns the terminal
+    /// outcome — Completed, Aborted (gate fail), or Manual.
     pub async fn run(&self) -> SchedulerOutcome {
-        unimplemented!("#78: scheduler run loop — see tests/scheduler.rs")
+        let mut last_spawn_delay: Option<u32> = None;
+        for (idx, phase) in self.plan.phases.iter().enumerate() {
+            if self.abort.load(Ordering::Relaxed) {
+                let _ = self.client.submit(OrchestratorCommand::Stop).await;
+                return SchedulerOutcome::Manual;
+            }
+
+            // Emit SetSpawnDelayMs only when it changes between phases.
+            if last_spawn_delay != Some(phase.spawn_delay_ms) {
+                if let Err(e) = self
+                    .client
+                    .submit(OrchestratorCommand::SetSpawnDelayMs(
+                        SetSpawnDelayMsCommand {
+                            spawn_delay_ms: phase.spawn_delay_ms,
+                        },
+                    ))
+                    .await
+                {
+                    let _ = self.client.submit(OrchestratorCommand::Stop).await;
+                    return SchedulerOutcome::Aborted {
+                        phase_index: idx,
+                        reason: format!("SetSpawnDelayMs failed: {}", e),
+                    };
+                }
+                last_spawn_delay = Some(phase.spawn_delay_ms);
+            }
+
+            if let Err(e) = self
+                .client
+                .submit(OrchestratorCommand::SetPlayers(SetPlayersCommand {
+                    player_count: phase.target_players,
+                }))
+                .await
+            {
+                let _ = self.client.submit(OrchestratorCommand::Stop).await;
+                return SchedulerOutcome::Aborted {
+                    phase_index: idx,
+                    reason: format!("SetPlayers failed: {}", e),
+                };
+            }
+
+            // Hold: poll gate at gate_poll_interval until hold_seconds elapses.
+            let hold = Duration::from_secs(phase.hold_seconds);
+            let started = std::time::Instant::now();
+            while started.elapsed() < hold {
+                if self.abort.load(Ordering::Relaxed) {
+                    let _ = self.client.submit(OrchestratorCommand::Stop).await;
+                    return SchedulerOutcome::Manual;
+                }
+                if matches!(self.gate.check().await, GateState::Fail) {
+                    let _ = self.client.submit(OrchestratorCommand::Stop).await;
+                    return SchedulerOutcome::Aborted {
+                        phase_index: idx,
+                        reason: "gate failed".into(),
+                    };
+                }
+                let remaining = hold.saturating_sub(started.elapsed());
+                let sleep_for = self.gate_poll_interval.min(remaining);
+                if sleep_for.is_zero() {
+                    break;
+                }
+                tokio::time::sleep(sleep_for).await;
+            }
+        }
+
+        let _ = self.client.submit(OrchestratorCommand::Stop).await;
+        SchedulerOutcome::Completed
     }
 }
