@@ -71,6 +71,75 @@ pub trait Uploader: Send + Sync {
     ) -> impl std::future::Future<Output = Result<(), String>> + Send;
 }
 
+/// No-op uploader for local-only deployments and tests where we only care
+/// about disk artifacts.
+pub struct NoopUploaderExt;
+impl Uploader for NoopUploaderExt {
+    async fn upload(&self, _key: String, _body: Vec<u8>) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Real S3 uploader. Shells out to the `aws` CLI rather than pulling in
+/// `aws-sdk-s3` (the cloud nodes already have `aws` installed via the
+/// AWS-CLI bootstrap; the operator's laptop has it too). Each upload runs
+/// `aws s3 cp - s3://<bucket>/<prefix>/<key>` via stdin.
+pub struct S3Uploader {
+    bucket: String,
+    prefix: String,
+}
+
+impl S3Uploader {
+    pub fn new(bucket: impl Into<String>, prefix: impl Into<String>) -> Self {
+        let mut p = prefix.into();
+        if !p.is_empty() && !p.ends_with('/') {
+            p.push('/');
+        }
+        Self {
+            bucket: bucket.into(),
+            prefix: p,
+        }
+    }
+}
+
+impl Uploader for S3Uploader {
+    async fn upload(&self, key: String, body: Vec<u8>) -> Result<(), String> {
+        use tokio::io::AsyncWriteExt;
+        use tokio::process::Command;
+        let s3_uri = format!("s3://{}/{}{}", self.bucket, self.prefix, key);
+        let mut child = Command::new("aws")
+            .args([
+                "s3",
+                "cp",
+                "-",
+                &s3_uri,
+                "--no-progress",
+                "--only-show-errors",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn aws s3 cp: {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&body).await.map_err(|e| e.to_string())?;
+            // Drop closes stdin so aws sees EOF.
+        }
+        let out = child
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("wait aws s3 cp: {}", e))?;
+        if !out.status.success() {
+            return Err(format!(
+                "aws s3 cp {} failed: {}",
+                s3_uri,
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub struct ResultsWriter<U: Uploader + 'static> {
     pub dir: PathBuf,
     pub uploader: std::sync::Arc<U>,
