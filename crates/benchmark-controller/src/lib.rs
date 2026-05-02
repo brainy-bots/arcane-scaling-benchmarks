@@ -1,0 +1,20 @@
+//! Benchmark controller — owns phase logic, ramp schedule, validity gates,
+//! and per-phase results. Drives the swarm orchestrator over WebSocket;
+//! subscribes to its telemetry SSE for stats and gate evaluation.
+//!
+//! See `EPIC #75` in `arcane-scaling-benchmarks` for the full architecture.
+//! Test scaffolds for each component land here; implementations land in
+//! follow-up PRs.
+
+pub mod gate;
+pub mod plan;
+pub mod results;
+pub mod scheduler;
+
+#[cfg(test)]
+mod tests {
+    mod gate;
+    mod plan;
+    mod results;
+    mod scheduler;
+}
