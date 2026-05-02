@@ -84,17 +84,40 @@ impl<U: Uploader + 'static> ResultsWriter<U> {
         }
     }
 
-    /// Write `phase_<index>.json`. Implementation lands in #80.
-    pub async fn write_phase(&self, _result: &PhaseResult) -> Result<PathBuf, String> {
-        unimplemented!("#80: per-phase result write — see tests/results.rs")
+    /// Ensure the output directory exists. Idempotent.
+    pub async fn ensure_dir(&self) -> std::io::Result<()> {
+        tokio::fs::create_dir_all(&self.dir).await
     }
 
-    /// Write `manifest.json`. Implementation lands in #80.
+    /// Write `phase_<index>.json` (1-indexed in the filename so it matches
+    /// the prior tier-results convention) and upload the same bytes.
+    pub async fn write_phase(&self, result: &PhaseResult) -> Result<PathBuf, String> {
+        let body = serde_json::to_vec_pretty(result).map_err(|e| e.to_string())?;
+        let filename = format!("phase_{}.json", result.phase_index + 1);
+        let path = self.dir.join(&filename);
+        tokio::fs::write(&path, &body)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.uploader.upload(filename, body).await?;
+        Ok(path)
+    }
+
+    /// Write `manifest.json` (run-level summary) and upload the same bytes.
+    /// `_plan` is accepted for future extension (e.g. embedding the plan
+    /// snapshot) but not yet referenced — the manifest carries `plan_name`
+    /// and `plan_sha` which are sufficient for the current contract.
     pub async fn write_manifest(
         &self,
         _plan: &TestPlan,
-        _manifest: &RunManifest,
+        manifest: &RunManifest,
     ) -> Result<PathBuf, String> {
-        unimplemented!("#80: manifest write — see tests/results.rs")
+        let body = serde_json::to_vec_pretty(manifest).map_err(|e| e.to_string())?;
+        let filename = "manifest.json".to_string();
+        let path = self.dir.join(&filename);
+        tokio::fs::write(&path, &body)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.uploader.upload(filename, body).await?;
+        Ok(path)
     }
 }
