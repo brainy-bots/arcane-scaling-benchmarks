@@ -6,6 +6,7 @@
 //!
 //! This is what the `benchmark-controller` binary calls from `main`.
 
+use crate::dashboard::{spawn_dashboard, DashboardState};
 use crate::gate::Evaluation;
 use crate::orchestrator_client::HttpOrchestratorClient;
 use crate::plan::{parse, TestPlan};
@@ -13,12 +14,14 @@ use crate::results::{
     OverallOutcome, PhaseOutcome, PhaseOutcomeEntry, PhaseResult, ResultsWriter, RunManifest,
     Uploader,
 };
-use crate::scheduler::{RampScheduler, SchedulerOutcome};
+use crate::scheduler::{OrchestratorClient, RampScheduler, SchedulerOutcome};
 use crate::sse_consumer::{spawn_sse_consumer, LiveGateSignal, LiveGateState};
+use arcane_swarm_orchestrator::telemetry::TelemetrySnapshot;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{broadcast, RwLock};
 
 /// Configuration for one controller run.
 pub struct RunConfig {
@@ -30,6 +33,11 @@ pub struct RunConfig {
     pub results_dir: PathBuf,
     /// Submitter id recorded with each command in the orchestrator log.
     pub submitter: String,
+    /// Whether to render the live ASCII dashboard to stdout. Callers
+    /// should set this to `std::io::stdout().is_terminal()` (auto) or
+    /// override via a CLI flag. When false, only the binary's terminal
+    /// summary line is printed.
+    pub enable_dashboard: bool,
 }
 
 /// Final outcome of a run.
@@ -80,13 +88,43 @@ where
             .and_then(|p| p.gate.clone())
             .unwrap_or_default(),
     ));
-    let _sse = spawn_sse_consumer(cfg.orchestrator_base_url.clone(), live_gate.clone());
+
+    // Snapshot broadcast — single SSE connection feeds both the gate
+    // ingestion path and the dashboard. Capacity 64 covers ~2 min of 2-Hz
+    // snapshots before a slow subscriber would Lag (which the dashboard
+    // tolerates by skipping).
+    let (snap_tx, snap_rx_for_dashboard) = broadcast::channel::<TelemetrySnapshot>(64);
+    let _sse = spawn_sse_consumer(
+        cfg.orchestrator_base_url.clone(),
+        live_gate.clone(),
+        Some(snap_tx.clone()),
+    );
+
+    // Dashboard wiring. The `DashboardState` is updated by the per-phase
+    // loop below as phases progress and gate state changes, so the
+    // renderer can show the current phase, hold progress, and gate.
+    let dashboard_state = Arc::new(RwLock::new(DashboardState::new(plan.clone())));
+    let _dashboard = if cfg.enable_dashboard {
+        Some(spawn_dashboard(dashboard_state.clone(), snap_rx_for_dashboard))
+    } else {
+        // Drop the receiver so the broadcast doesn't keep buffering
+        // when no one will read.
+        drop(snap_rx_for_dashboard);
+        None
+    };
 
     let abort_flag = Arc::new(AtomicBool::new(false));
     install_sigint_handler(abort_flag.clone());
 
     let started_at_unix_ms = now_unix_ms();
     let started_at = Instant::now();
+    {
+        // Anchor the dashboard's "elapsed" clock to the same start instant
+        // so the on-screen counter matches the manifest's started_at.
+        let mut s = dashboard_state.write().await;
+        s.overall_started_at = started_at;
+        s.phase_started_at = started_at;
+    }
 
     let mut phase_outcomes: Vec<PhaseOutcomeEntry> = Vec::new();
     let mut overall = OverallOutcome::Pass;
@@ -103,6 +141,12 @@ where
 
         let phase_started = now_unix_ms();
         let phase_started_inst = Instant::now();
+        {
+            let mut s = dashboard_state.write().await;
+            s.current_phase_index = idx;
+            s.phase_started_at = phase_started_inst;
+            s.gate_state = "pass".to_string();
+        }
         let single_phase_plan = TestPlan {
             plan: plan.plan.clone(),
             phases: vec![phase.clone()],
@@ -110,7 +154,8 @@ where
         let client =
             HttpOrchestratorClient::new(cfg.orchestrator_base_url.clone(), cfg.submitter.clone());
         let signal = LiveGateSignal::new(live_gate.clone());
-        let mut scheduler = RampScheduler::new(single_phase_plan, client, signal);
+        let mut scheduler = RampScheduler::new(single_phase_plan, client, signal)
+            .with_emit_terminal_stop_on_completed(false);
         // Share the abort flag across all per-phase schedulers.
         scheduler.abort = abort_flag.clone();
         let outcome = scheduler.run().await;
@@ -130,6 +175,15 @@ where
                 reason: "manual abort".into(),
             },
         };
+        {
+            let mut s = dashboard_state.write().await;
+            s.gate_state = match &phase_outcome {
+                PhaseOutcome::Pass => "pass",
+                PhaseOutcome::Fail { .. } => "fail",
+                PhaseOutcome::Skipped { .. } => "skipped",
+            }
+            .to_string();
+        }
         let _ = phase_dur; // available for future driver-metrics aggregation
 
         let _ = writer
@@ -168,6 +222,28 @@ where
             }
             break;
         }
+    }
+
+    // Terminal Stop — submitted exactly once after all phases finish (or
+    // we broke out early on failure). The per-phase schedulers no longer
+    // emit Stop on Completed (they did, which tore drivers down between
+    // phases). On manual abort / gate failure, the per-phase scheduler
+    // already emitted Stop, so this is a redundant best-effort.
+    {
+        use arcane_swarm_orchestrator::protocol::OrchestratorCommand;
+        let client =
+            HttpOrchestratorClient::new(cfg.orchestrator_base_url.clone(), cfg.submitter.clone());
+        let _ = client.submit(OrchestratorCommand::Stop).await;
+    }
+
+    // Signal the dashboard task to clear its screen and exit so the
+    // binary's terminal summary line below isn't overwritten.
+    {
+        let mut s = dashboard_state.write().await;
+        s.finished = true;
+    }
+    if let Some(h) = _dashboard {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), h).await;
     }
 
     let ended_at_unix_ms = now_unix_ms();

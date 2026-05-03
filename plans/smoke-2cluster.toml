@@ -1,0 +1,17 @@
+[plan]
+name = "smoke-2cluster-aws"
+description = "AWS smoke against 2-cluster topology (1 driver). Validates the controller→orchestrator→driver wire works end-to-end on real EC2."
+
+[[phases]]
+name = "tiny-warmup"
+target_players = 50
+spawn_delay_ms = 20
+hold_seconds = 30
+
+[[phases]]
+name = "tiny-ramp"
+target_players = 100
+spawn_delay_ms = 10
+hold_seconds = 30
+[phases.gate]
+min_entities = 80

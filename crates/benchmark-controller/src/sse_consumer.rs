@@ -13,7 +13,7 @@ use crate::scheduler::{GateSignal, GateState};
 use arcane_swarm_orchestrator::telemetry::TelemetrySnapshot;
 use futures::StreamExt;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 
 /// Live, mutable phase state that both the scheduler and the SSE consumer
 /// read/write.
@@ -71,18 +71,26 @@ impl GateSignal for LiveGateSignal {
 
 /// Spawn an SSE consumer task. The task holds an HTTP/SSE connection to
 /// `<base_url>/telemetry/stream`, parses each event into a
-/// `TelemetrySnapshot`, and feeds it into `state`. Returns a JoinHandle the
-/// caller can abort on shutdown.
+/// `TelemetrySnapshot`, feeds it into `state` for gate evaluation, and (if
+/// `snap_tx` is `Some`) re-broadcasts the parsed snapshot so other consumers
+/// (notably the dashboard) can subscribe without opening a second SSE
+/// connection. Returns a JoinHandle the caller can abort on shutdown.
 pub fn spawn_sse_consumer(
     base_url: String,
     state: Arc<LiveGateState>,
+    snap_tx: Option<broadcast::Sender<TelemetrySnapshot>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let url = format!("{}/telemetry/stream", base_url.trim_end_matches('/'));
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(0))
-            .build();
-        let client = match client {
+        // No client-level timeout — SSE responses are open-ended streams,
+        // and reqwest's default timeout is "none" if we simply don't call
+        // .timeout(). Previous code called .timeout(Duration::from_secs(0))
+        // which is a *literal* 0-second timeout, not a sentinel — every
+        // request fired and immediately timed out, so the consumer
+        // silently never ingested a snapshot in production. The live gate
+        // then sat at its default `Pass` evaluation indefinitely, which
+        // looked like working metrics but was actually an empty signal.
+        let client = match reqwest::Client::builder().build() {
             Ok(c) => c,
             Err(_) => return,
         };
@@ -114,6 +122,9 @@ pub fn spawn_sse_consumer(
                         if let Some(json_str) = line.strip_prefix("data: ") {
                             if let Ok(snap) = serde_json::from_str::<TelemetrySnapshot>(json_str) {
                                 state.ingest(&snap).await;
+                                if let Some(tx) = &snap_tx {
+                                    let _ = tx.send(snap);
+                                }
                             }
                         }
                     }

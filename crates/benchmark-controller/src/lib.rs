@@ -6,6 +6,7 @@
 //! Test scaffolds for each component land here; implementations land in
 //! follow-up PRs.
 
+pub mod dashboard;
 pub mod gate;
 pub mod orchestrator_client;
 pub mod plan;

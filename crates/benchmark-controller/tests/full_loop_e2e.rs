@@ -202,6 +202,7 @@ async fn full_loop_writes_phase_files_and_manifest() {
         orchestrator_base_url: http_url.clone(),
         results_dir: results_dir.clone(),
         submitter: "smoke-test".to_string(),
+        enable_dashboard: false,
     };
     let outcome = run(cfg, Arc::new(NoopUploaderExt))
         .await

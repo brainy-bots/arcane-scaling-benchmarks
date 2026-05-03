@@ -146,6 +146,9 @@ function Wait-Ssm {
     while ((Get-Date) -lt $deadline) {
         $r = aws ssm get-command-invocation --region $region --command-id $CommandId --instance-id $InstanceId --output json 2>$null | ConvertFrom-Json
         if ($r -and $r.Status -in @('Success','Failed','Cancelled','TimedOut')) {
+            if ($r.Status -ne 'Success') {
+                throw "SSM command $CommandId on $InstanceId ended with Status=$($r.Status). stderr: $($r.StandardErrorContent)"
+            }
             return $r
         }
         Start-Sleep -Seconds 3
@@ -153,38 +156,59 @@ function Wait-Ssm {
     throw "SSM command $CommandId on $InstanceId timed out after ${TimeoutSec}s"
 }
 
-# ── 1. Pull image on every node + start support containers ───────────────────
-$startSupport = @"
-set -euo pipefail
-docker pull $BenchmarkImage
-"@
+# ── 0. Wait for cloud-init (Docker install) on every node ────────────────────
+# Fresh `terraform apply` returns when EC2 instances are running, but the
+# user-data script (Docker install + AWS CLI install) may still be in
+# progress. Hammering SSM with `docker pull` before that finishes hits
+# "docker: not found" and the run dies. Block until every node responds
+# OK to `which docker`.
+$allInstances = @($managerInstanceId) + $clusterInstanceIds + $driverInstanceIds + @($spacetimeInstanceId, $redisInstanceId) | Where-Object { $_ }
+Write-Host "==> waiting for cloud-init (docker install) on $($allInstances.Count) nodes"
+foreach ($id in $allInstances) {
+    $deadline = (Get-Date).AddMinutes(8)
+    $ready = $false
+    while ((Get-Date) -lt $deadline) {
+        $cmdId = aws ssm send-command --region $region --instance-ids $id --document-name "AWS-RunShellScript" --parameters 'commands=["which docker"]' --output text --query 'Command.CommandId' 2>$null
+        if (-not $cmdId) {
+            # SSM agent itself not online yet
+            Start-Sleep -Seconds 8
+            continue
+        }
+        Start-Sleep -Seconds 4
+        $status = aws ssm get-command-invocation --region $region --command-id $cmdId --instance-id $id --output text --query 'Status' 2>$null
+        if ($status -eq 'Success') { $ready = $true; break }
+        Start-Sleep -Seconds 6
+    }
+    if (-not $ready) {
+        throw "cloud-init did not install docker on $id within 8 minutes"
+    }
+    Write-Host "   docker ready on $id"
+}
 
+# ── 1. Pull image on every node + start support containers ───────────────────
 Write-Host "==> pulling image on all nodes"
 $pullCmds = @{}
-foreach ($id in @($managerInstanceId) + $clusterInstanceIds + $driverInstanceIds + @($spacetimeInstanceId, $redisInstanceId)) {
-    if (-not $id) { continue }
-    $pullCmds[$id] = Invoke-Ssm -InstanceId $id -Commands @($startSupport) -Comment "docker pull $BenchmarkImage"
+foreach ($id in $allInstances) {
+    $pullCmds[$id] = Invoke-Ssm -InstanceId $id -Commands @("docker pull $BenchmarkImage") -Comment "docker pull"
 }
-foreach ($id in $pullCmds.Keys) { Wait-Ssm -CommandId $pullCmds[$id] -InstanceId $id -TimeoutSec 600 | Out-Null }
+foreach ($id in $pullCmds.Keys) { Wait-Ssm -CommandId $pullCmds[$id] -InstanceId $id -TimeoutSec 900 | Out-Null }
 
 # ── 2. Start Redis + SpacetimeDB + publish module ────────────────────────────
 Write-Host "==> starting Redis"
-$redisStart = @"
-set -euo pipefail
-docker rm -f bench-redis 2>/dev/null || true
-docker run -d --name bench-redis --restart unless-stopped --network host redis:7-alpine redis-server --appendonly yes
-"@
-Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $redisInstanceId -Commands @($redisStart) -Comment "redis") -InstanceId $redisInstanceId | Out-Null
+$redisCmds = @(
+    "docker rm -f bench-redis 2>/dev/null || true",
+    "docker run -d --name bench-redis --restart unless-stopped --network host redis:7-alpine redis-server --appendonly yes"
+)
+Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $redisInstanceId -Commands $redisCmds -Comment "redis") -InstanceId $redisInstanceId | Out-Null
 
 Write-Host "==> starting SpacetimeDB + publishing module"
-$stStart = @"
-set -euo pipefail
-docker rm -f bench-spacetime 2>/dev/null || true
-docker run -d --name bench-spacetime --restart unless-stopped --network host $BenchmarkImage spacetime start
-for i in {1..60}; do bash -c 'echo > /dev/tcp/127.0.0.1/3000' 2>/dev/null && break; sleep 2; done
-docker run --rm --network host $BenchmarkImage benchmark-publish-module --mode Persist --host http://127.0.0.1:3000
-"@
-Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $spacetimeInstanceId -Commands @($stStart) -Comment "spacetime+publish") -InstanceId $spacetimeInstanceId -TimeoutSec 600 | Out-Null
+$stCmds = @(
+    "docker rm -f bench-spacetime 2>/dev/null || true",
+    "docker run -d --name bench-spacetime --restart unless-stopped --network host $BenchmarkImage spacetime start",
+    "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do bash -c 'echo > /dev/tcp/127.0.0.1/3000' 2>/dev/null && break; sleep 2; done",
+    "docker run --rm --network host $BenchmarkImage benchmark-publish-module --mode Persist --host http://127.0.0.1:3000"
+)
+Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $spacetimeInstanceId -Commands $stCmds -Comment "spacetime+publish") -InstanceId $spacetimeInstanceId -TimeoutSec 600 | Out-Null
 
 # ── 3. Start cluster fleet ───────────────────────────────────────────────────
 $redisHost     = (aws ec2 describe-instances --region $region --instance-ids $redisInstanceId --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text 2>$null)
@@ -195,20 +219,8 @@ for ($i = 0; $i -lt $clusterInstanceIds.Count; $i++) {
     $cid     = $clusterInstanceIds[$i]
     $cuid    = $clusterIds[$i]
     $clusPort = 8090
-    $clStart = @"
-set -euo pipefail
-docker rm -f bench-cluster 2>/dev/null || true
-docker run -d --name bench-cluster --restart unless-stopped --network host \
-  -e CLUSTER_ID=$cuid \
-  -e REDIS_URL=redis://${redisHost}:6379 \
-  -e CLUSTER_WS_PORT=$clusPort \
-  -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 \
-  -e SPACETIMEDB_DATABASE=arcane \
-  -e SPACETIMEDB_PERSIST=1 \
-  -e SPACETIMEDB_PERSIST_HZ=1 \
-  $BenchmarkImage benchmark-cluster
-"@
-    $cmdId = Invoke-Ssm -InstanceId $cid -Commands @($clStart) -Comment "cluster $i"
+    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host -e CLUSTER_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e CLUSTER_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BenchmarkImage benchmark-cluster"
+    $cmdId = Invoke-Ssm -InstanceId $cid -Commands @("docker rm -f bench-cluster 2>/dev/null || true", $clRun) -Comment "cluster $i"
     Wait-Ssm -CommandId $cmdId -InstanceId $cid | Out-Null
 }
 
@@ -225,59 +237,51 @@ $managerClustersStr = ($managerClusters -join ',')
 $statsUrls = @($clusterPrivateIps | ForEach-Object { "http://${_}:8091/stats" })
 $statsArgs = ($statsUrls | ForEach-Object { "--cluster-stats-url $_" }) -join ' '
 
-$mgrStart = @"
-set -euo pipefail
-docker rm -f bench-manager bench-orchestrator 2>/dev/null || true
-
-docker run -d --name bench-manager --restart unless-stopped --network host \
-  -e MANAGER_HTTP_PORT=8081 \
-  -e MANAGER_CLUSTERS='$managerClustersStr' \
-  $BenchmarkImage arcane-manager
-
-mkdir -p /var/orchestrator
-docker run -d --name bench-orchestrator --restart unless-stopped --network host \
-  -v /var/orchestrator:/var/orchestrator \
-  $BenchmarkImage arcane-swarm-orchestrator \
-    --driver-port $orchDriverPort \
-    --http-port $orchHttpPort \
-    --archive-dir /var/orchestrator/snapshots \
-    --max-drivers 32 \
-    $statsArgs
-"@
-Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $managerInstanceId -Commands @($mgrStart) -Comment "manager+orchestrator") -InstanceId $managerInstanceId | Out-Null
+$mgrCleanup = "docker rm -f bench-manager bench-orchestrator 2>/dev/null || true"
+$mgrRun     = "docker run -d --name bench-manager --restart unless-stopped --network host -e MANAGER_HTTP_PORT=8081 -e MANAGER_CLUSTERS='$managerClustersStr' $BenchmarkImage arcane-manager"
+$mgrMkdir   = "mkdir -p /var/orchestrator"
+$orchRun    = "docker run -d --name bench-orchestrator --restart unless-stopped --network host -v /var/orchestrator:/var/orchestrator $BenchmarkImage arcane-swarm-orchestrator --driver-port $orchDriverPort --http-port $orchHttpPort --archive-dir /var/orchestrator/snapshots --max-drivers 64 $statsArgs"
+Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $managerInstanceId -Commands @($mgrCleanup, $mgrRun, $mgrMkdir, $orchRun) -Comment "manager+orchestrator") -InstanceId $managerInstanceId | Out-Null
 
 # ── 5. Start drivers in orchestrated mode ────────────────────────────────────
 Write-Host "==> starting $($driverInstanceIds.Count) drivers in orchestrated mode"
 $orchUrlInternal = "ws://${managerPrivateIp}:${orchDriverPort}"
+$drvRun = "docker run -d --name bench-driver --restart unless-stopped --network host -e ORCHESTRATOR_URL=$orchUrlInternal $BenchmarkImage arcane-swarm --backend arcane --arcane-manager http://${managerPrivateIp}:8081 --orchestrator-url $orchUrlInternal --tick-rate 60 --max-players 4000 --user-data-bytes 1000 --inter-spawn-delay-ms 8 --max-players-per-driver 4000 --burst-enabled --burst-period-secs 30 --burst-cohort-percent 20 --burst-actions-per-player 10 --burst-window-ms 500 --zone-event-period-secs 30 --zone-event-window-ms 500 --actions-per-sec 2 --read-rate 5 --run-forever"
 foreach ($did in $driverInstanceIds) {
-    $drvStart = @"
-set -euo pipefail
-docker rm -f bench-driver 2>/dev/null || true
-docker run -d --name bench-driver --restart unless-stopped --network host \
-  -e ORCHESTRATOR_URL=$orchUrlInternal \
-  $BenchmarkImage arcane-swarm \
-    --backend arcane \
-    --arcane-manager http://${managerPrivateIp}:8081 \
-    --orchestrator-url $orchUrlInternal \
-    --tick-rate 60 \
-    --max-players 4000 \
-    --user-data-bytes 1000 \
-    --inter-spawn-delay-ms 8 \
-    --max-players-per-driver 4000 \
-    --burst-enabled --burst-period-secs 30 --burst-cohort-percent 20 \
-    --burst-actions-per-player 10 --burst-window-ms 500 \
-    --zone-event-period-secs 30 --zone-event-window-ms 500 \
-    --actions-per-sec 2 --read-rate 5 \
-    --run-forever
-"@
-    Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $did -Commands @($drvStart) -Comment "driver") -InstanceId $did | Out-Null
+    Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $did -Commands @("docker rm -f bench-driver 2>/dev/null || true", $drvRun) -Comment "driver") -InstanceId $did | Out-Null
 }
 
-# Give drivers a moment to register with the orchestrator.
-Start-Sleep -Seconds 8
+# Wait for the orchestrator HTTP API to be reachable and for every driver
+# to register before we hand off to the controller. Uses curl with
+# --max-time so the SSE response (open-ended) doesn't hang the check.
+Write-Host "==> waiting for orchestrator + $($driverInstanceIds.Count) drivers to register"
+$orchUrlPublic = "http://${managerPublicDns}:${orchHttpPort}"
+$expectedDrivers = $driverInstanceIds.Count
+$readyDeadline = (Get-Date).AddSeconds(120)
+$ready = $false
+while ((Get-Date) -lt $readyDeadline) {
+    # `--max-time 3` cuts the SSE stream at 3s. We grab the first `data:`
+    # line, parse it, check fleet size.
+    $raw = & curl -sN --max-time 3 "${orchUrlPublic}/telemetry/stream" 2>$null
+    if ($raw) {
+        $firstData = ($raw -split "`n" | Where-Object { $_ -match '^data: ' } | Select-Object -First 1)
+        if ($firstData) {
+            $json = $firstData -replace '^data:\s*', ''
+            try {
+                $snap = $json | ConvertFrom-Json -ErrorAction Stop
+                $active = ($snap.fleet | Where-Object { $_.state -eq 'Active' }).Count
+                Write-Host "   ($active/$expectedDrivers active)"
+                if ($active -ge $expectedDrivers) { $ready = $true; break }
+            } catch { }
+        }
+    }
+    Start-Sleep -Seconds 2
+}
+if (-not $ready) {
+    Write-Host "WARNING: timed out waiting for full driver registration after 120s; continuing anyway" -ForegroundColor Yellow
+}
 
 # ── 6. Run the controller from the operator's laptop ─────────────────────────
-$orchUrlPublic = "http://${managerPublicDns}:${orchHttpPort}"
 Write-Host "==> running controller against $orchUrlPublic"
 
 $ctlArgs = @(
@@ -294,10 +298,40 @@ if ($S3UploadResults) {
 & $ControllerBinary @ctlArgs
 $ctlExit = $LASTEXITCODE
 
-# ── 7. Stop driver + orchestrator + cluster + support containers ─────────────
+# ── 7. Capture container logs BEFORE teardown ────────────────────────────────
+Write-Host "==> capturing container logs"
+$logsDir = Join-Path $ResultsDir "container-logs"
+New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+foreach ($id in @($managerInstanceId)) {
+    $cmdId = Invoke-Ssm -InstanceId $id -Commands @("docker logs bench-orchestrator 2>&1 | tail -200", "echo ---SEPARATOR---", "docker logs bench-manager 2>&1 | tail -100") -Comment "logs manager"
+    $r = Wait-Ssm -CommandId $cmdId -InstanceId $id -TimeoutSec 60
+    Set-Content -Path (Join-Path $logsDir "manager-$id.log") -Value ($r.StandardOutputContent + "`n---STDERR---`n" + $r.StandardErrorContent)
+}
+for ($i = 0; $i -lt $driverInstanceIds.Count; $i++) {
+    $id = $driverInstanceIds[$i]
+    try {
+        $cmdId = Invoke-Ssm -InstanceId $id -Commands @("docker logs bench-driver 2>&1 | tail -100") -Comment "logs driver"
+        $r = Wait-Ssm -CommandId $cmdId -InstanceId $id -TimeoutSec 60
+        Set-Content -Path (Join-Path $logsDir "driver-$i-$id.log") -Value ($r.StandardOutputContent + "`n---STDERR---`n" + $r.StandardErrorContent)
+    } catch {
+        Write-Host "   log fetch failed for driver $id" -ForegroundColor Yellow
+    }
+}
+foreach ($i in 0..($clusterInstanceIds.Count - 1)) {
+    $id = $clusterInstanceIds[$i]
+    try {
+        $cmdId = Invoke-Ssm -InstanceId $id -Commands @("docker logs bench-cluster 2>&1 | tail -50") -Comment "logs cluster"
+        $r = Wait-Ssm -CommandId $cmdId -InstanceId $id -TimeoutSec 60
+        Set-Content -Path (Join-Path $logsDir "cluster-$i-$id.log") -Value ($r.StandardOutputContent + "`n---STDERR---`n" + $r.StandardErrorContent)
+    } catch {
+        Write-Host "   log fetch failed for cluster $id" -ForegroundColor Yellow
+    }
+}
+Write-Host "   logs saved under $logsDir"
+
+# ── 8. Stop driver + orchestrator + cluster + support containers ─────────────
 Write-Host "==> stopping all containers"
 $stopAll = "docker rm -f bench-driver bench-orchestrator bench-manager bench-cluster bench-spacetime bench-redis 2>/dev/null || true"
-$allInstances = @($managerInstanceId) + $clusterInstanceIds + $driverInstanceIds + @($spacetimeInstanceId, $redisInstanceId) | Where-Object { $_ }
 foreach ($id in $allInstances) {
     $null = Invoke-Ssm -InstanceId $id -Commands @($stopAll) -Comment "stop"
 }

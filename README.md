@@ -42,17 +42,13 @@ cd arcane-scaling-benchmarks
 
 ### 2. Provision the fleet (~5 min)
 
-Terraform creates everything from scratch in your AWS account: 4 clusters + 12 driver instances + manager + Redis + SpacetimeDB + S3 bucket + IAM + security groups.
-
 ```bash
-cd infra/terraform/aws_benchmark
-terraform init
-terraform apply -var-file=arcaneperhost.clusters_4.drivers_12.tfvars -auto-approve
-terraform output -json benchmark_state > .benchmark-aws-terraform.json
-cd ../../..
+./infra/aws/setup.sh
 ```
 
-Wait ~60 seconds after `terraform apply` finishes for SSM agents to register on every instance. The run script will fail loudly if any node is not yet `SSM-Online`.
+That single command runs `terraform init` + `terraform apply` (4 cluster nodes + 12 driver instances + manager + Redis + SpacetimeDB + S3 bucket + IAM + security groups), writes the canonical state JSON the run script needs, and **waits until every EC2 reports SSM `Online`** before returning. No manual sleep, no follow-up commands. Re-running `setup.sh` against an already-provisioned fleet is a safe no-op (terraform refresh + 0 changes + SSM check).
+
+Defaults to the headline topology (`arcaneperhost.clusters_4.drivers_12.tfvars`, `us-east-1`). Override with `--tfvars <name>` and `--region <aws-region>`.
 
 ### 3. Run the benchmark (~25 min)
 
@@ -70,9 +66,12 @@ Per-driver artifacts land in `s3://<artifact-bucket>/benchmark-aws/AwsArcanePerH
 ### 4. Tear down (~2 min)
 
 ```bash
-cd infra/terraform/aws_benchmark
-terraform destroy -var-file=arcaneperhost.clusters_4.drivers_12.tfvars -auto-approve
+./infra/aws/cleanup.sh
 ```
+
+That single command runs `terraform destroy` (with one automatic retry on transient AWS-API errors) and then **audits the AWS API directly** to confirm zero EC2 / Security Group / VPC / IAM / S3 resources tagged `Project=arcane-benchmark` remain in the region. Either it exits 0 with `==> CLEAN` or non-zero listing exactly what's left. No "I think it worked" — the success contract is verified end-to-end.
+
+Same flag overrides as `setup.sh` (`--tfvars`, `--region`).
 
 **Total cost of one full reproduction: ~$5** on AWS on-demand pricing.
 
