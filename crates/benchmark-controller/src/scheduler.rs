@@ -59,6 +59,14 @@ pub struct RampScheduler<C: OrchestratorClient + 'static, G: GateSignal + 'stati
     /// this to true to short-circuit the run; the scheduler emits Stop and
     /// returns `SchedulerOutcome::Manual`.
     pub abort: Arc<AtomicBool>,
+    /// Whether to emit `Stop` after a successful Completed run. Defaults to
+    /// true (back-compat for direct callers). The phase-by-phase runner in
+    /// `run.rs` sets this to false because it wraps each phase in its own
+    /// scheduler instance — the inter-phase Stop would tear down all
+    /// drivers between phases and the next phase's commands would race
+    /// against an empty fleet. Manual abort and gate failures still emit
+    /// Stop unconditionally.
+    pub emit_terminal_stop_on_completed: bool,
 }
 
 impl<C: OrchestratorClient + 'static, G: GateSignal + 'static> RampScheduler<C, G> {
@@ -69,11 +77,17 @@ impl<C: OrchestratorClient + 'static, G: GateSignal + 'static> RampScheduler<C, 
             gate,
             gate_poll_interval: Duration::from_secs(2),
             abort: Arc::new(AtomicBool::new(false)),
+            emit_terminal_stop_on_completed: true,
         }
     }
 
     pub fn with_gate_poll_interval(mut self, d: Duration) -> Self {
         self.gate_poll_interval = d;
+        self
+    }
+
+    pub fn with_emit_terminal_stop_on_completed(mut self, v: bool) -> Self {
+        self.emit_terminal_stop_on_completed = v;
         self
     }
 
@@ -151,7 +165,9 @@ impl<C: OrchestratorClient + 'static, G: GateSignal + 'static> RampScheduler<C, 
             }
         }
 
-        let _ = self.client.submit(OrchestratorCommand::Stop).await;
+        if self.emit_terminal_stop_on_completed {
+            let _ = self.client.submit(OrchestratorCommand::Stop).await;
+        }
         SchedulerOutcome::Completed
     }
 }

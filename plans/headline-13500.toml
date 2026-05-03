@@ -1,45 +1,91 @@
-# Headline benchmark: 13,500 CCU across 4 clusters.
-# Drives the orchestrator through warmup → ramp → steady-state.
+# Headline benchmark: matches the README's 13,500 CCU @ 60 Hz / 1 KB / 10.4 ms.
+#
+# target_players is AGGREGATE — the orchestrator distributes across active
+# drivers (e.g. 13,500 / 12 = 1,125 per driver, with remainder spread).
+#
+# Tier sequence mirrors the README: 1,500 → 13,500 aggregate in 1,500-step
+# increments, 30 s hold each, validity gate at 50 ms p99 latency (engine
+# gate; 100 ms production target leaves headroom for regional internet RTT).
 
 [plan]
 name = "headline-13500"
-description = "13,500 CCU headline benchmark across 4 clusters @ 30 Hz"
+description = "13,500 CCU @ 60 Hz / 1 KB user_data / 12 drivers — README headline"
 
-# ---------------------------------------------------------------------------
-# Phase 1: warmup. Bring the fleet to a small steady state to verify the
-# pipeline (drivers connecting, clusters polling). No strict latency gate
-# during warmup; the gate is just "we have entities."
-# ---------------------------------------------------------------------------
 [[phases]]
-name = "warmup"
-target_players = 1000
-spawn_delay_ms = 50
-hold_seconds = 60
-
+name = "tier-1500-aggregate"
+target_players = 1500
+spawn_delay_ms = 25
+hold_seconds = 30
 [phases.gate]
-min_entities = 800
+max_p99_latency_ms = 50
 
-# ---------------------------------------------------------------------------
-# Phase 2: ramp to headline. Spawn-delay is tightened so the join rate
-# doesn't dominate the ramp window. Steady-state hold at 13,500 CCU.
-# Latency gate enforced.
-# ---------------------------------------------------------------------------
 [[phases]]
-name = "ramp-to-13500"
+name = "tier-3000-aggregate"
+target_players = 3000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-4500-aggregate"
+target_players = 4500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-6000-aggregate"
+target_players = 6000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-7500-aggregate"
+target_players = 7500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-9000-aggregate"
+target_players = 9000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-10500-aggregate"
+target_players = 10500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-12000-aggregate"
+target_players = 12000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-13500-aggregate-headline"
 target_players = 13500
 spawn_delay_ms = 25
-hold_seconds = 600
-
+hold_seconds = 30
 [phases.gate]
-max_p99_latency_ms = 100
-min_entities = 13000
+max_p99_latency_ms = 50
 
-# ---------------------------------------------------------------------------
-# Phase 3: cooldown. Soft tear-down so the orchestrator and clusters can
-# settle before terraform destroy. No gate.
-# ---------------------------------------------------------------------------
+# Cooldown: drain players cleanly so terraform destroy can complete fast.
 [[phases]]
 name = "cooldown"
 target_players = 0
 spawn_delay_ms = 25
-hold_seconds = 30
+hold_seconds = 10

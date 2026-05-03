@@ -19,6 +19,7 @@
 use benchmark_controller::results::Uploader;
 use benchmark_controller::results::{NoopUploaderExt, S3Uploader};
 use benchmark_controller::run::{run, RunConfig, RunOutcome};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -29,7 +30,8 @@ fn print_usage() {
         --orchestrator-url <http://host:port> \\
         --results-dir <dir> \\
         [--submitter <id>] \\
-        [--s3-bucket <name> --s3-prefix <prefix>]"
+        [--s3-bucket <name> --s3-prefix <prefix>] \\
+        [--dashboard auto|on|off]   (default: auto — on iff stdout is a TTY)"
     );
 }
 
@@ -41,6 +43,7 @@ async fn main() {
     let mut submitter: String = format!("benchmark-controller-{}", std::process::id());
     let mut s3_bucket: Option<String> = None;
     let mut s3_prefix: Option<String> = None;
+    let mut dashboard_arg: Option<String> = None;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -70,6 +73,10 @@ async fn main() {
                 i += 1;
                 s3_prefix = Some(args[i].clone());
             }
+            "--dashboard" => {
+                i += 1;
+                dashboard_arg = Some(args[i].clone());
+            }
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
@@ -79,12 +86,27 @@ async fn main() {
         i += 1;
     }
 
+    // Default: render the dashboard iff stdout is an actual terminal.
+    // Override with --dashboard on|off; --dashboard auto re-applies the
+    // TTY autodetect explicitly. CI / file redirects fall through to off
+    // automatically, so the existing one-line summary still parses.
+    let enable_dashboard = match dashboard_arg.as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        Some("auto") | None => std::io::stdout().is_terminal(),
+        Some(other) => {
+            eprintln!("--dashboard expects auto|on|off, got {:?}", other);
+            std::process::exit(2);
+        }
+    };
+
     let cfg = match (plan, url, results_dir) {
         (Some(plan), Some(url), Some(rd)) => RunConfig {
             plan_path: plan,
             orchestrator_base_url: url,
             results_dir: rd,
             submitter,
+            enable_dashboard,
         },
         _ => {
             print_usage();
