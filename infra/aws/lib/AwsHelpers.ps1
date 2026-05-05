@@ -74,7 +74,11 @@ function Send-SsmRunShellScript {
   )
   $paramsPath = Join-Path (Get-ArcaneTempDir) ("arcane-ssm-$([guid]::NewGuid().ToString('n')).json")
   try {
-    $paramObj = @{ commands = @($ScriptBody); executionTimeout = @("$TimeoutSeconds") }
+    # Always normalize to LF before sending to AWS-RunShellScript.
+    # This avoids CRLF contamination from Windows-authored strings causing
+    # remote Linux shell failures (e.g., "_script.sh: not found"/exit 127).
+    $normalizedScriptBody = $ScriptBody -replace "`r`n", "`n" -replace "`r", "`n"
+    $paramObj = @{ commands = @($normalizedScriptBody); executionTimeout = @("$TimeoutSeconds") }
     [System.IO.File]::WriteAllText(
       $paramsPath,
       ($paramObj | ConvertTo-Json -Depth 10 -Compress),

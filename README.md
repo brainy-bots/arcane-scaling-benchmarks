@@ -33,6 +33,15 @@ The result below is reproducible from scratch by any reader with an AWS account 
 
 You need: an AWS account, [Terraform](https://developer.hashicorp.com/terraform/install), [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) with credentials configured, and [PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell). **No build step required** — the Docker image is pre-built and public.
 
+Before running the commands below, verify this shell resolves both CLIs:
+
+```powershell
+terraform version
+aws --version
+```
+
+If either command is not found, install it and restart the shell (or ensure the install location is on your `PATH`).
+
 ### 1. Clone (~1 min)
 
 ```powershell
