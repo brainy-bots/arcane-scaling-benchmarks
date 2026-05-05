@@ -33,22 +33,31 @@ The result below is reproducible from scratch by any reader with an AWS account 
 
 You need: an AWS account, [Terraform](https://developer.hashicorp.com/terraform/install), [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) with credentials configured, and [PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell). **No build step required** — the Docker image is pre-built and public.
 
+Before running the commands below, verify this shell resolves both CLIs:
+
+```powershell
+terraform version
+aws --version
+```
+
+If either command is not found, install it and restart the shell (or ensure the install location is on your `PATH`).
+
 ### 1. Clone (~1 min)
 
-```bash
+```powershell
 git clone https://github.com/brainy-bots/arcane-scaling-benchmarks.git
 cd arcane-scaling-benchmarks
 ```
 
 ### 2. Provision the fleet (~5 min)
 
-```bash
-./infra/aws/setup.sh
+```powershell
+pwsh ./infra/aws/Setup-Benchmark-Aws.ps1
 ```
 
-That single command runs `terraform init` + `terraform apply` (4 cluster nodes + 12 driver instances + manager + Redis + SpacetimeDB + S3 bucket + IAM + security groups), writes the canonical state JSON the run script needs, and **waits until every EC2 reports SSM `Online`** before returning. No manual sleep, no follow-up commands. Re-running `setup.sh` against an already-provisioned fleet is a safe no-op (terraform refresh + 0 changes + SSM check).
+That single command runs `terraform init` + `terraform apply` (4 cluster nodes + 12 driver instances + manager + Redis + SpacetimeDB + S3 bucket + IAM + security groups), writes the canonical state JSON the run script needs, and **waits until every EC2 reports SSM `Online`** before returning. No manual sleep, no follow-up commands. Re-running `Setup-Benchmark-Aws.ps1` against an already-provisioned fleet is a safe no-op (terraform refresh + 0 changes + SSM check).
 
-Defaults to the headline topology (`arcaneperhost.clusters_4.drivers_12.tfvars`, `us-east-1`). Override with `--tfvars <name>` and `--region <aws-region>`.
+Defaults to the headline topology (`arcaneperhost.clusters_4.drivers_12.tfvars`, `us-east-1`). Override with `-Tfvars <name>` and `-Region <aws-region>`.
 
 ### 3. Run the benchmark (~25 min)
 
@@ -65,13 +74,13 @@ Per-driver artifacts land in `s3://<artifact-bucket>/benchmark-aws/AwsArcanePerH
 
 ### 4. Tear down (~2 min)
 
-```bash
-./infra/aws/cleanup.sh
+```powershell
+pwsh ./infra/aws/Cleanup-Benchmark-Aws.ps1
 ```
 
 That single command runs `terraform destroy` (with one automatic retry on transient AWS-API errors) and then **audits the AWS API directly** to confirm zero EC2 / Security Group / VPC / IAM / S3 resources tagged `Project=arcane-benchmark` remain in the region. Either it exits 0 with `==> CLEAN` or non-zero listing exactly what's left. No "I think it worked" — the success contract is verified end-to-end.
 
-Same flag overrides as `setup.sh` (`--tfvars`, `--region`).
+Same parameter overrides as setup (`-Tfvars`, `-Region`).
 
 **Total cost of one full reproduction: ~$5** on AWS on-demand pricing.
 

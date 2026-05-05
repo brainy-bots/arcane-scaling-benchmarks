@@ -75,6 +75,7 @@ docker run -d --name arcane-bench-redis -p 0.0.0.0:6379:6379 redis:7-alpine redi
 for i in $(seq 1 90); do docker exec arcane-bench-redis redis-cli ping 2>/dev/null | grep -q PONG && exit 0; sleep 1; done
 exit 1
 '@
+$redisScript = $redisScript -replace "`r`n", "`n"
 
   # ── 2. SpacetimeDB (our image, spacetime-start role + Persist module publish) ─
   $stTpl = @'
