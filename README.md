@@ -1,8 +1,8 @@
 # Arcane — scaling benchmark
 
-This repository is the public scaling benchmark for [**Arcane**](https://github.com/brainy-bots/arcane) — a Rust multiplayer game backend engine that partitions server authority across N cluster nodes by predicted player-interaction probability rather than by spatial zoning. The benchmark measures the headline properties Arcane is designed to deliver, end-to-end on commodity AWS hardware: **how many concurrent players** can be sustained, **at what server tick rate**, with **how much per-entity replication state**, and **at what server-side latency**.
+This repository is the public scaling benchmark for [**Arcane**](https://github.com/brainy-bots/arcane) — a Rust multiplayer game backend engine that partitions server authority across N cluster nodes by predicted player-interaction probability rather than by spatial zoning or flat hashing. The benchmark measures the headline properties Arcane is designed to deliver, end-to-end on commodity AWS hardware: **how many concurrent players** can be sustained, **at what server tick rate**, with **how much per-entity replication state**, and **at what server-side latency**.
 
-The result below is reproducible from scratch by any reader with an AWS account in **~25 minutes** using a pre-built public Docker image — no compilation step required.
+The headline run below is reproducible from scratch by any reader with an AWS account in about **25–35 minutes** on commodity AWS hardware (add a few minutes for the one-time `benchmark-controller` build on first run).
 
 > **13,500 CCU at 60 Hz, 1 KB payload, 10.4 ms mean server-side latency, on commodity AWS hardware.**
 
@@ -25,131 +25,197 @@ The result below is reproducible from scratch by any reader with an AWS account 
 
 *On the 1 KB number.* That's the **slot size** carried whenever an entity appears in a broadcast delta — not the per-tick per-player downstream wire rate. Most entities are velocity-stable most ticks and are dead-reckoned client-side rather than re-broadcast (a standard MMO replication technique; see [What the workload actually does](#what-the-workload-actually-does) below for the detail). Effective bytes-on-the-wire depend on movement pattern.
 
-*The engine is not at its ceiling.* 1,125 per driver is the √N driver-safety cap that prevents a single load generator from becoming the bottleneck — not a measured engine break. Latency stayed essentially flat across the entire ramp; the full curve and methodology are in [Detailed description](#detailed-description) below.
+*The engine is not at its ceiling.* 1,125 per driver is the √N driver-safety cap that prevents a single load generator from becoming the bottleneck — not a measured engine break. Latency stayed essentially flat across the entire ramp; full methodology and interpretation are in [docs/BENCHMARK-METHODOLOGY.md](docs/BENCHMARK-METHODOLOGY.md).
 
 ---
 
-## Reproduce in 10 minutes
+## Reproduce (live ASCII dashboard)
 
-You need: an AWS account, [Terraform](https://developer.hashicorp.com/terraform/install), [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) with credentials configured, and [PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell). **No build step required** — the Docker image is pre-built and public.
+The benchmark is reproduced through the controller + orchestrator workflow. In
+both paths below, the live ASCII dashboard is rendered by `benchmark-controller`.
 
-Before running the commands below, verify this shell resolves both CLIs:
+### Path A (lowest friction, optional): Docker operator
+
+If you already have Docker, this is the fastest setup because the container
+already includes `pwsh`, `terraform`, `aws`, `curl`, and `benchmark-controller`.
+It runs preflight -> setup -> run -> cleanup in one flow.
+
+Windows PowerShell:
+
+```powershell
+docker run --rm -it `
+  -e AWS_PROFILE=default `
+  -e AWS_REGION=us-east-1 `
+  -v "${env:USERPROFILE}\.aws:/root/.aws:ro" `
+  -v "${PWD}\results:/workspace/results" `
+  ghcr.io/brainy-bots/arcane-benchmark-operator:<operator-tag>
+```
+
+If GHCR access is unavailable, build and use the local fallback image:
+
+```powershell
+docker build -f docker/operator.Dockerfile -t arcane-benchmark-operator:test .
+
+docker run --rm -it `
+  -e AWS_PROFILE=default `
+  -e AWS_REGION=us-east-1 `
+  -v "${env:USERPROFILE}\.aws:/root/.aws:ro" `
+  -v "${PWD}\results:/workspace/results" `
+  arcane-benchmark-operator:test
+```
+
+### Path B (manual scripts, optional): step-by-step
+
+Use this when you want to inspect each stage yourself.
+
+### Prerequisites
+
+- An AWS account
+- [Terraform](https://developer.hashicorp.com/terraform/install) (used under the hood by the setup script)
+- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) (`aws sts get-caller-identity` works)
+- [PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell)
+- **curl** (non-alias: Windows `curl.exe`, macOS/Linux `/usr/bin/curl` — used for a short orchestrator readiness probe)
+- Rust toolchain (`cargo build` works) *or* a pre-built `target/release/benchmark-controller`
+
+Verify tools resolve from your shell:
 
 ```powershell
 terraform version
 aws --version
+pwsh -NoProfile -Command '$PSVersionTable.PSVersion'
 ```
 
-If either command is not found, install it and restart the shell (or ensure the install location is on your `PATH`).
+If you installed Terraform or AWS CLI in the same terminal session just now,
+refresh process PATH once before running preflight:
 
-### 1. Clone (~1 min)
+```powershell
+$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+terraform version
+aws --version
+```
+
+### Friction savers (controller path)
+
+| Feature | What to run |
+|--------|-------------|
+| **Preflight** | `pwsh ./infra/aws/Test-ReproPrereqs.ps1` — Terraform/AWS/SSM/curl, tfvars on disk, and `benchmark-controller` build readiness. |
+| **Provision / tear down** | `Setup-Benchmark-Aws.ps1` and `Cleanup-Benchmark-Aws.ps1` wrap `terraform init` / `apply` / `destroy`, write **`.benchmark-aws-terraform.json`** at the repo root, and wait for SSM (setup) or audit for leaks (cleanup). |
+| **One-shot full loop** | `Run-Repro-Aws-Controller.ps1` — preflight → setup → controller run → cleanup. Use `-SkipSetup` / `-SkipCleanup` while iterating. |
+| **Summary** | After every `Run-Benchmark-Aws-Controller.ps1`, **`benchmark_repro_summary.json`** plus a phase table are written under the run’s results directory (next to `manifest.json`). |
+
+Advanced operators can still invoke Terraform directly in `infra/terraform/aws_benchmark` (see that folder’s README); the documented path uses the scripts above.
+
+### 1. Clone
 
 ```powershell
 git clone https://github.com/brainy-bots/arcane-scaling-benchmarks.git
 cd arcane-scaling-benchmarks
 ```
 
-### 2. Provision the fleet (~5 min)
+### 2. Build `benchmark-controller` once
+
+```bash
+cd crates/benchmark-controller
+cargo build --release
+cd ../..
+```
+
+Binary ends up at `crates/benchmark-controller/target/release/benchmark-controller` (the launcher searches this path and the repo-root `target/` layout if you use a workspace).
+
+### 3. Preflight + provision AWS
+
+From the repo root:
 
 ```powershell
+pwsh ./infra/aws/Test-ReproPrereqs.ps1
 pwsh ./infra/aws/Setup-Benchmark-Aws.ps1
 ```
 
-That single command runs `terraform init` + `terraform apply` (4 cluster nodes + 12 driver instances + manager + Redis + SpacetimeDB + S3 bucket + IAM + security groups), writes the canonical state JSON the run script needs, and **waits until every EC2 reports SSM `Online`** before returning. No manual sleep, no follow-up commands. Re-running `Setup-Benchmark-Aws.ps1` against an already-provisioned fleet is a safe no-op (terraform refresh + 0 changes + SSM check).
+This writes **`.benchmark-aws-terraform.json`** in the repo root (and a copy under `infra/terraform/aws_benchmark/`) and waits until SSM reports every instance online.
 
-Defaults to the headline topology (`arcaneperhost.clusters_4.drivers_12.tfvars`, `us-east-1`). Override with `-Tfvars <name>` and `-Region <aws-region>`.
+Defaults match the headline topology (`arcaneperhost.clusters_4.drivers_12.tfvars`, `us-east-1`).
 
-### 3. Run the benchmark (~25 min)
+### 4. Run the benchmark with the terminal dashboard
 
-The harness ramps from 1,500 to 13,500 aggregate CCU in 125-player-per-driver steps, holding each tier for 30 s of steady state.
+Run from an **interactive terminal window** (dashboard rendering assumes stdout is a real TTY):
+
+First, pick an image tag that actually exists on GHCR (do not assume `latest` exists):
 
 ```powershell
-pwsh ./infra/aws/Run-Benchmark-Aws.ps1 `
-  -StatePath ./infra/terraform/aws_benchmark/.benchmark-aws-terraform.json `
-  -ConfigFile ./configs/arcane_plus_spacetimedb.clusters_4.drivers_12.tick60_lat50_realistic_1kb.json `
-  -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:dev-2026-04-27-multidriver
+$BenchmarkImage = 'ghcr.io/brainy-bots/arcane-benchmark:dev-20260503-025321-diag'
+docker manifest inspect $BenchmarkImage | Out-Null
 ```
 
-Per-driver artifacts land in `s3://<artifact-bucket>/benchmark-aws/AwsArcanePerHost/<run_id>/driver-N/`. Each driver writes one `FINAL: players=N lat_avg_ms=X.XX total_errs=0` line per tier; the top tier is `players=1125`, mean latency across all 12 drivers should land in the 9–13 ms band.
+```powershell
+pwsh ./infra/aws/Run-Benchmark-Aws-Controller.ps1 `
+  -StatePath ./.benchmark-aws-terraform.json `
+  -PlanFile ./plans/headline-13500.toml `
+  -BenchmarkImage $BenchmarkImage
+```
 
-### 4. Tear down (~2 min)
+What this does (high level):
+
+- Starts / verifies the AWS fleet containers via SSM.
+- Runs drivers in orchestrator-coordinated mode.
+- Runs `benchmark-controller` locally against the orchestrator HTTP API and telemetry stream.
+- Writes **`benchmark_repro_summary.json`** and prints a phase outcome table when `manifest.json` is present.
+
+Artifacts land under `results/runs/<Environment>/<RunId>/` by default (phase JSON + manifest + summary).
+
+Optional: upload controller artifacts to the Terraform-created artifact bucket:
+
+```powershell
+pwsh ./infra/aws/Run-Benchmark-Aws-Controller.ps1 `
+  -StatePath ./.benchmark-aws-terraform.json `
+  -PlanFile ./plans/headline-13500.toml `
+  -BenchmarkImage $BenchmarkImage `
+  -S3UploadResults
+```
+
+**Optional — one command** (preflight, setup, run, cleanup):
+
+```powershell
+pwsh ./infra/aws/Run-Repro-Aws-Controller.ps1 `
+  -PlanFile ./plans/headline-13500.toml `
+  -BenchmarkImage $BenchmarkImage
+```
+
+### 5. Tear down (~2 min)
 
 ```powershell
 pwsh ./infra/aws/Cleanup-Benchmark-Aws.ps1
 ```
 
-That single command runs `terraform destroy` (with one automatic retry on transient AWS-API errors) and then **audits the AWS API directly** to confirm zero EC2 / Security Group / VPC / IAM / S3 resources tagged `Project=arcane-benchmark` remain in the region. Either it exits 0 with `==> CLEAN` or non-zero listing exactly what's left. No "I think it worked" — the success contract is verified end-to-end.
-
-Same parameter overrides as setup (`-Tfvars`, `-Region`).
-
 **Total cost of one full reproduction: ~$5** on AWS on-demand pricing.
+
+### Troubleshooting (common failure signatures)
+
+- `terraform ... not found on PATH` → restart your shell or fix PATH so `terraform version` works (setup/cleanup shell out to Terraform).
+- `aws ... not found on PATH` → install AWS CLI v2 and verify `aws --version`.
+- `curl` preflight fails → use a real `curl` binary (not a PowerShell alias); on Windows, `curl.exe` ships with recent OS builds.
+- `benchmark-controller binary not found` → `cd crates/benchmark-controller` then `cargo build --release`.
+- Orchestrator/controller can’t connect → verify your laptop can reach the manager/orchestrator endpoint exported in state (security group / operator CIDR). Setup uses open `operator_cidr_blocks=["0.0.0.0/0"]` by default; tighten in Terraform/`Setup-Benchmark-Aws.ps1` if you need a `/32` lock-down.
 
 ---
 
-# Detailed description
+# Benchmark methodology (full details)
 
-Everything below is the careful, technical version of the headline above. If the table was enough for your decision, you can stop here. If you want to verify the claim, evaluate Arcane for your own use case, or read the methodology in detail, keep going.
+The README keeps the fast-scan version for first-time readers. Full technical
+methodology is documented in:
 
-## Latency curve
+- [docs/BENCHMARK-METHODOLOGY.md](docs/BENCHMARK-METHODOLOGY.md)
 
-driver-0 sample, ramp from 125 to 1,125 players-per-driver (1.5K → 13.5K aggregate CCU):
+Short version:
 
-| Aggregate CCU | Mean latency |
-|---|---|
-| 1,500 | 8.02 ms |
-| 6,000 | 8.55 ms |
-| 12,000 | 8.52 ms |
-| **13,500** | **9.41 ms** |
-
-+1.4 ms across 9× CCU growth. The engine is not under stress at the top tier — the run terminated at the configured per-driver safety cap (`floor(4000 / sqrt(12)) = 1,154`), not at an engine break.
-
-## What "server-side latency" measures, exactly
-
-The driver records a wall-clock timestamp when it sends an outbound action (a `seq_id`-tagged WebSocket message) and another wall-clock timestamp when it receives the next server broadcast frame whose ack-list contains that `seq_id`. The reported `lat_avg_ms` is the mean of those deltas across every action the driver sent during the 30 s steady-state phase of a tier.
-
-That measurement includes: cluster ingest, action processing in the simulation tick, broadcast encoding, network transit driver-side, and any kernel-level scheduling on either side. It does **not** include public-internet RTT — the swarm is in the same VPC as the cluster fleet, so this is a server-side latency floor. Add typical regional internet RTT (30–60 ms) for an end-to-end perceived figure.
-
-## What counts as an error
-
-A round-trip is recorded as an **error** when one of these happens during the 30 s steady-state phase of a tier:
-
-1. **`seq_id` ack timeout.** The driver sent an action tagged with a sequence ID but never received the cluster's ack-broadcast within the per-action timeout (~5 s). Either the action never reached the cluster, or the cluster never acknowledged it.
-2. **WebSocket connection drop.** The connection closed abnormally mid-tier.
-3. **Wire-protocol violation.** A frame arrived that didn't decode against the expected schema.
-
-The **0.000 %** at the top tier of Run O (0 errors across ~24,000,000 round-trips) is across all three categories.
-
-The error counter does **not** include:
-
-- **Superseded broadcast frames.** Tokio's per-subscriber broadcast channel emits a `broadcast_lagged_event` if a subscriber falls 256 frames behind, after which those 256 frames are skipped for that subscriber and the next frame received carries the latest world state. From the player's perspective the world is current; only obsolete state was discarded. These events are tracked as a separate cluster-side counter (`broadcast_lagged_events`) and were 0 at the headline tier.
-- **Periodic resync packets.** Every N ticks (default 60) the cluster sends a full snapshot rather than a delta, so clients can recover from any earlier loss. Resyncs are normal traffic, not failures.
-- **Cohort-burst back-pressure.** During the 500 ms burst window every 30 s, requests intentionally queue against the spike — that's the workload by design, not a defect.
-
-In short: errors here mean *the player's action was lost or the player's connection broke*. They do **not** mean *the broadcast pipeline temporarily skipped a frame that was about to be replaced anyway*.
-
-## What the workload actually does
-
-Each simulated player:
-- Sends **2 game actions per second** (`pickup_item`, `use_item`, `interact`)
-- Sends **5 reads per second**
-- Subscribes to its cluster's broadcast stream (no area-of-interest filtering — full visibility is supported architecturally)
-- Participates in a **20 % cohort burst every 30 s** (10 actions / player in a 500 ms window)
-- Plus periodic zone events
-
-The cluster's broadcast pipeline applies two bandwidth optimizations that are worth naming explicitly so the reader doesn't infer a naive `60 Hz × 1 KB × 13,500-entity snapshot` is going on the wire:
-
-- **Dead-reckoning delta encoding.** An entity is only included in a tick's broadcast when its quantized velocity changed since the last broadcast, plus periodic resync ticks for recovery. Most ticks broadcast a small fraction of the world's entities — clients dead-reckon the rest from the last known velocity.
-- **Wire-level position/velocity quantization.** Continuous f64 simulation values are encoded as i16 on the wire (~6 B per `Vec3`, vs 24 B raw). The 1 KB `user_data` payload rides on top of that and is included whenever the entity is in the delta.
-
-Both are standard MMO replication techniques; we name them so the headline numbers are interpretable and not mistaken for raw fan-out throughput.
-
-Validity gate, enforced per tier on every driver:
-- Error rate < 1 %
-- Mean latency < 50 ms (engine-side gate; the 100 ms production target leaves headroom for regional internet RTT)
-- Cluster `/stats` confirms entity count actually reached the target
-- All 12 driver SSM commands return `Status=Success`
-
-Any tier failing any gate aborts the ramp and the harness reports the lower ceiling. The 13,500 number above is not the highest the harness *attempted* — it is the highest tier that **passed** every gate on every driver.
+- The run is driven by `benchmark-controller` and uses per-tier validity gates
+  (latency, error rate, and achieved aggregate entities).
+- The controller evaluates steady-state only after ramp readiness, so a tier is
+  not marked as passing before required load is actually reached.
+- Latency is measured driver-side as action-send to ack-broadcast elapsed time.
+- The workload is intentionally replication-heavy (full-mesh visibility, no AOI
+  filtering), and includes burst behavior.
+- Replication uses dead-reckoning and wire quantization, so 1 KB is payload slot
+  size when an entity is in a delta, not "full-world snapshot every tick."
 
 ---
 
@@ -161,7 +227,7 @@ To stay on the right side of intellectual honesty about a number that's delibera
 
 - **The Arcane cluster pipeline sustains the configured workload at 13,500 CCU on this fleet shape, with mean server-side action-to-broadcast latency under 13 ms on every one of 12 independent drivers, and zero errors across ~24 million round-trips at the top tier.** Every claim in that sentence is directly measured at the driver, by 12 independent processes, all reporting in agreement.
 - **The latency curve is essentially flat from 1.5K to 13.5K CCU.** Across a 9× growth in CCU, mean latency drifted from 8.02 ms to 9.41 ms. The engine is not under stress at the top tier; the run terminated at the configured per-driver safety cap (`floor(4000 / sqrt(12)) = 1154`), not at an engine break.
-- **Reproducibility is real.** The Docker image, Terraform module, configuration JSON, and run script are all committed. Anyone with an AWS account can re-run this and see numbers in the same band.
+- **Reproducibility is real.** The Docker image, Terraform module, TOML benchmark plans, and controller-driven operator workflow are all committed. Anyone with an AWS account can re-run this and see numbers in the same band.
 
 ### What it does NOT prove
 
@@ -189,26 +255,27 @@ The simulation here is a **kinematic physics baseline** — `position += velocit
 ## Project structure
 
 ```
-configs/              Benchmark scenario JSON files
+plans/                TOML test plans (e.g. headline-13500.toml) for benchmark-controller
 infra/
-  terraform/          Terraform module — provisions and destroys all AWS resources
-  aws/                PowerShell run scripts — drives the workload over SSM
+  terraform/          Terraform — AWS fleet provisioning
+  aws/                PowerShell — preflight, setup/cleanup, controller run, one-shot repro
 crates/
-  benchmark-cluster/                  Arcane cluster binary with BenchmarkSimulation
-  benchmark-spacetimedb-persist/      SpacetimeDB persistence module (Arcane mode)
-  benchmark-spacetimedb-full/         SpacetimeDB-only baseline module
-arcane/               Arcane Engine (git submodule)
-arcane_swarm/         Load generator (git submodule)
+  benchmark-controller/               Operator binary (terminal dashboard) — build on your laptop
+  benchmark-cluster/                Arcane cluster binary (BenchmarkSimulation) — baked into Docker image
+  benchmark-spacetimedb-persist/    SpacetimeDB WASM (Arcane persistence mode) — image build
+  benchmark-spacetimedb-full/       SpacetimeDB WASM (baseline) — image build
+docker/               Image helper scripts (e.g. benchmark-publish-module)
+arcane/               Arcane Engine (git submodule) — image build
+arcane_swarm/         Load generator + orchestrator (git submodule) — image build + controller schema
 ```
 
 ## Documentation
 
-- [REPRODUCIBILITY.md](REPRODUCIBILITY.md) — Full reproduction instructions including local mode (no AWS account required for smaller runs)
-- [infra/aws/README.md](infra/aws/README.md) — Run / collect script reference
-- [infra/terraform/aws_benchmark/README.md](infra/terraform/aws_benchmark/README.md) — Terraform module reference
-- [docs/BENCHMARK_JOURNAL.md](docs/BENCHMARK_JOURNAL.md) — Dated log of every benchmark experiment, including dead ends
-- [docs/WORKLOAD_PARITY.md](docs/WORKLOAD_PARITY.md) — Workload equivalence between Arcane and SpacetimeDB-only modes
-- [docs/CANONICAL_PARAMETERS.md](docs/CANONICAL_PARAMETERS.md) — Fixed workload parameters
+- This **`README.md`** — headline numbers + AWS reproduction (controller path)
+- [docs/BENCHMARK-METHODOLOGY.md](docs/BENCHMARK-METHODOLOGY.md) — full benchmark methodology, gating logic, measurement definitions, and interpretation
+- [infra/aws/README.md](infra/aws/README.md) — script inventory
+- [infra/terraform/aws_benchmark/README.md](infra/terraform/aws_benchmark/README.md) — Terraform reference
+- [results/README.md](results/README.md) — where run artifacts land
 
 ## License
 
