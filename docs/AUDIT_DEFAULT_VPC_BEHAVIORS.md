@@ -15,24 +15,19 @@ were needed on main.
 
 ## Scope 2: EC2 public DNS hostname references
 
-**Result: None found.**
+**Result: Two references found** in `infra/terraform/aws_benchmark/outputs.tf`:
 
-Searched across all Terraform (.tf), PowerShell (.ps1), bash (.sh), Rust,
-Docker, and config files:
+- `ManagerPublicDns` — `aws_instance.arph_manager[0].public_dns`
+- `OrchestratorPublicDns` — `aws_instance.arph_manager[0].public_dns`
 
-| Pattern | Results |
-|---|---|
-| `compute.amazonaws.com` | Not found |
-| `compute-1.amazonaws.com` | Not found |
-| `public_dns` / `PublicDnsName` | Not found |
-| `aws_instance.*.public_dns` in outputs | Not found (outputs use `.id` only) |
-| Hostname construction from instance IDs | Not found (uses `Get-Ec2PrivateIp` for private IPs) |
+These outputs are consumed by the benchmark state JSON and used by
+`Run-Benchmark-Aws-Controller.ps1` to connect from the operator's
+laptop to the manager/orchestrator EC2 instance. Internal cluster
+traffic still uses private IPs and SSM.
 
-The benchmark stack communicates entirely via **private IPs and SSM**.
-No code path constructs or relies on EC2 public DNS hostnames. The
-`enable_dns_hostnames = true` change is **purely defensive** — it
-matches the old default-VPC contract in case anything downstream
-(scripts outside this repo) references public DNS names.
+This makes `enable_dns_hostnames = true` **load-bearing** — without it,
+the `.public_dns` attribute resolves to an empty string and the
+operator cannot reach the orchestrator endpoint from outside the VPC.
 
 ## Scope 3: Other default-VPC behaviors
 
