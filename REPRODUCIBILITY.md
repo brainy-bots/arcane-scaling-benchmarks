@@ -171,7 +171,7 @@ Optional flow (three phases, split by tool so every AWS resource is declarative)
    ```bash
    terraform output -json benchmark_state > .benchmark-aws-terraform.json
    ```
-2. **Run** — **`infra/aws/Run-Benchmark-Aws.ps1 -StatePath .benchmark-aws-terraform.json -ConfigFile <...> -BenchmarkImage ghcr.io/<org>/arcane-benchmark:<tag>`** invokes SSM on every node to `docker pull` the pre-built benchmark image and `docker run` the role container (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark`). Nothing is compiled on EC2. Results are uploaded to S3; **`infra/aws/Collect-AwsBenchmarkResults.ps1`** / **`Sync-AwsBenchmarkResultsFromS3.ps1`** pull them into **`results/runs/<Environment>/<runId>/`** locally.
+2. **Run** — **`infra/aws/Run-Benchmark-Aws.ps1 -StatePath .benchmark-aws-terraform.json -ConfigFile <...> -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:dev-20260503-025321-diag`** invokes SSM on every node to `docker pull` the pre-built benchmark image and `docker run` the role container (`spacetime start`, `arcane-manager`, `benchmark-cluster`, `run-benchmark`). Nothing is compiled on EC2. Results are uploaded to S3; **`infra/aws/Collect-AwsBenchmarkResults.ps1`** / **`Sync-AwsBenchmarkResultsFromS3.ps1`** pull them into **`results/runs/<Environment>/<runId>/`** locally.
 3. **Tear down** — `terraform destroy` removes every resource. No alternate cleanup path exists; this keeps reproduction deterministic for anyone starting from an empty AWS account.
 
 See **`infra/terraform/aws_benchmark/README.md`** for the module details.
