@@ -54,7 +54,7 @@ docker run --rm -it `
 If GHCR access is unavailable, build and use the local fallback image:
 
 ```powershell
-docker build -f docker/operator.Dockerfile -t arcane-benchmark-operator:test .
+docker build -f Dockerfile.operator -t arcane-benchmark-operator:test .
 
 docker run --rm -it `
   -e AWS_PROFILE=default `
