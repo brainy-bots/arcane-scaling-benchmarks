@@ -48,7 +48,7 @@ docker run --rm -it `
   -e AWS_REGION=us-east-1 `
   -v "${env:USERPROFILE}\.aws:/root/.aws:ro" `
   -v "${PWD}\results:/workspace/results" `
-  ghcr.io/brainy-bots/arcane-benchmark-operator:<operator-tag>
+  ghcr.io/brainy-bots/arcane-benchmark-operator:latest
 ```
 
 If GHCR access is unavailable, build and use the local fallback image:
