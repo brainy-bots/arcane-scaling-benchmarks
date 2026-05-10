@@ -48,13 +48,13 @@ docker run --rm -it `
   -e AWS_REGION=us-east-1 `
   -v "${env:USERPROFILE}\.aws:/root/.aws:ro" `
   -v "${PWD}\results:/workspace/results" `
-  ghcr.io/brainy-bots/arcane-benchmark-operator:<operator-tag>
+  ghcr.io/brainy-bots/arcane-benchmark-operator:v0.2.0
 ```
 
 If GHCR access is unavailable, build and use the local fallback image:
 
 ```powershell
-docker build -f docker/operator.Dockerfile -t arcane-benchmark-operator:test .
+docker build -f Dockerfile.operator -t arcane-benchmark-operator:test .
 
 docker run --rm -it `
   -e AWS_PROFILE=default `
@@ -142,7 +142,7 @@ Run from an **interactive terminal window** (dashboard rendering assumes stdout 
 First, pick an image tag that actually exists on GHCR (do not assume `latest` exists):
 
 ```powershell
-$BenchmarkImage = 'ghcr.io/brainy-bots/arcane-benchmark:dev-20260503-025321-diag'
+$BenchmarkImage = 'ghcr.io/brainy-bots/arcane-benchmark:v0.2.0'
 docker manifest inspect $BenchmarkImage | Out-Null
 ```
 
