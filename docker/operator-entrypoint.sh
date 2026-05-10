@@ -5,7 +5,7 @@ cd /workspace
 
 # Defaults mirror the documented headline run.
 # Default matches README / manual runs (override with -e BENCHMARK_IMAGE=...).
-BENCHMARK_IMAGE="${BENCHMARK_IMAGE:-ghcr.io/brainy-bots/arcane-benchmark:v0.2.0}"
+BENCHMARK_IMAGE="${BENCHMARK_IMAGE:-ghcr.io/brainy-bots/arcane-benchmark:v0.3.0}"
 PLAN_FILE="${PLAN_FILE:-./plans/headline-13500.toml}"
 TFVARS_FILE="${TFVARS_FILE:-arcaneperhost.clusters_4.drivers_12.tfvars}"
 AWS_REGION_VALUE="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"

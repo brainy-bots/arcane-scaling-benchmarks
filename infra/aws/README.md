@@ -51,7 +51,7 @@ terraform -chdir=infra/terraform/aws_benchmark output -json benchmark_state |
 pwsh ./infra/aws/Run-Benchmark-Aws.ps1 `
   -StatePath .\.benchmark-aws-terraform.json `
   -ConfigFile .\configs\<your-config>.json `
-  -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:v0.2.0
+  -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:v0.3.0
 
 # 5. Collect results (optional; Run-Benchmark-Aws.ps1 syncs by default)
 pwsh ./infra/aws/Collect-AwsBenchmarkResults.ps1
@@ -68,7 +68,7 @@ terraform destroy
 - **Terraform** — needed for the provision and destroy steps. See [module install instructions](../terraform/aws_benchmark/README.md#install-terraform) (Windows / macOS / Linux).
 - **AWS CLI** configured so `aws sts get-caller-identity` succeeds.
 - Your identity needs `s3:GetObject` (and usually `s3:ListBucket`) on the artifact bucket to download results unless you use `-SkipLocalResultsDownload`.
-- A **pre-built benchmark image** on a public registry. The current published image is `ghcr.io/brainy-bots/arcane-benchmark:v0.2.0`. Pass the full reference via `-BenchmarkImage` (or set `ARCANE_BENCHMARK_IMAGE`). Nothing is compiled on EC2.
+- A **pre-built benchmark image** on a public registry. The current published image is `ghcr.io/brainy-bots/arcane-benchmark:v0.3.0`. Pass the full reference via `-BenchmarkImage` (or set `ARCANE_BENCHMARK_IMAGE`). Nothing is compiled on EC2.
 
 ## Adding a topology
 

@@ -43,6 +43,7 @@ COPY docker/benchmark-publish-module.sh docker/benchmark-publish-module.sh
 COPY --from=controller-builder /src/crates/benchmark-controller/target/release/benchmark-controller /workspace/crates/benchmark-controller/target/release/benchmark-controller
 
 COPY docker/operator-entrypoint.sh /usr/local/bin/operator-entrypoint.sh
-RUN chmod +x /usr/local/bin/operator-entrypoint.sh /workspace/docker/benchmark-publish-module.sh
+RUN sed -i 's/\r$//' /usr/local/bin/operator-entrypoint.sh /workspace/docker/benchmark-publish-module.sh \
+    && chmod +x /usr/local/bin/operator-entrypoint.sh /workspace/docker/benchmark-publish-module.sh
 
 ENTRYPOINT ["/usr/local/bin/operator-entrypoint.sh"]
