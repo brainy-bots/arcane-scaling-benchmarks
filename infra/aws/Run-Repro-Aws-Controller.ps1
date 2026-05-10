@@ -82,7 +82,7 @@ $runExit = 1
 function Invoke-Cleanup {
     if ($SkipCleanup) { return }
     try {
-        & $cleanupScript -Tfvars $Tfvars -Region $Region -Quiet
+        & $cleanupScript -Tfvars $Tfvars -Region $Region
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "Cleanup-Benchmark-Aws exited $LASTEXITCODE (check AWS console for leaks)."
         }
