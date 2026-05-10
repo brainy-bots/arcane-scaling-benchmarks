@@ -187,11 +187,30 @@ foreach ($id in $allInstances) {
 
 # ── 1. Pull image on every node + start support containers ───────────────────
 Write-Host "==> pulling image on all nodes"
-$pullCmds = @{}
-foreach ($id in $allInstances) {
-    $pullCmds[$id] = Invoke-Ssm -InstanceId $id -Commands @("docker pull $BenchmarkImage") -Comment "docker pull"
+$maxPullRetries = 3
+foreach ($attempt in 1..$maxPullRetries) {
+    $pullCmds = @{}
+    foreach ($id in $allInstances) {
+        $pullCmds[$id] = Invoke-Ssm -InstanceId $id -Commands @("docker pull $BenchmarkImage") -Comment "docker pull"
+    }
+    $failedNodes = @()
+    foreach ($id in $pullCmds.Keys) {
+        try {
+            Wait-Ssm -CommandId $pullCmds[$id] -InstanceId $id -TimeoutSec 900 | Out-Null
+        } catch {
+            $failedNodes += $id
+            Write-Warning "   pull failed on $id (attempt $attempt/$maxPullRetries): $($_.Exception.Message)"
+        }
+    }
+    if ($failedNodes.Count -eq 0) { break }
+    if ($attempt -eq $maxPullRetries) {
+        throw "docker pull failed on $($failedNodes.Count) node(s) after $maxPullRetries attempts"
+    }
+    Write-Host "   retrying pull on $($failedNodes.Count) node(s) in 10s..."
+    Start-Sleep -Seconds 10
+    $allInstances = $failedNodes
 }
-foreach ($id in $pullCmds.Keys) { Wait-Ssm -CommandId $pullCmds[$id] -InstanceId $id -TimeoutSec 900 | Out-Null }
+$allInstances = @($managerInstanceId) + $clusterInstanceIds + $driverInstanceIds + @($spacetimeInstanceId, $redisInstanceId) | Where-Object { $_ }
 
 # ── 2. Start Redis + SpacetimeDB + publish module ────────────────────────────
 Write-Host "==> starting Redis"

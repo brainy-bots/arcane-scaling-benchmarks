@@ -77,50 +77,56 @@ if ($ResultsDir) { $runArgs['ResultsDir'] = $ResultsDir }
 if ($S3UploadResults) { $runArgs['S3UploadResults'] = $true }
 
 $interactive = -not $NonInteractive -and -not [Console]::IsInputRedirected
+$runExit = 1
 
-while ($true) {
-    & $runScript @runArgs
-    $runExit = $LASTEXITCODE
-
-    if (Test-Path -LiteralPath $metaPath) {
-        $meta = Get-Content -LiteralPath $metaPath -Raw -Encoding utf8 | ConvertFrom-Json
-        Show-BenchmarkHeadlineTable -ResultsDir $meta.results_dir -StatePath $StatePath `
-            -RunId $meta.run_id -TfvarsPath $tfvarsFull -RepoRoot $repoRoot `
-            -ControllerExitCode $runExit
-    } else {
-        Write-Warning "Missing $metaPath — headline table skipped."
-    }
-
-    if (-not $interactive) {
-        if (-not $SkipCleanup) {
-            try {
-                & $cleanupScript -Tfvars $Tfvars -Region $Region -Quiet
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Warning "Cleanup-Benchmark-Aws exited $LASTEXITCODE (check AWS console for leaks)."
-                }
-            } catch {
-                Write-Warning "Cleanup failed: $($_.Exception.Message)"
-            }
+function Invoke-Cleanup {
+    if ($SkipCleanup) { return }
+    try {
+        & $cleanupScript -Tfvars $Tfvars -Region $Region -Quiet
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Cleanup-Benchmark-Aws exited $LASTEXITCODE (check AWS console for leaks)."
         }
-        exit $runExit
+    } catch {
+        Write-Warning "Cleanup failed: $($_.Exception.Message)"
     }
+}
 
+try {
     while ($true) {
-        Write-Host ''
-        Write-Host '  [1] Rerun the benchmark' -ForegroundColor Yellow
-        Write-Host '  [2] Destroy the AWS environment (terraform destroy)' -ForegroundColor Yellow
-        $choice = Read-Host 'Enter 1 or 2'
-        if ($choice -eq '2') {
-            try {
-                & $cleanupScript -Tfvars $Tfvars -Region $Region -Quiet
-            } catch {
-                Write-Warning "Cleanup failed: $($_.Exception.Message)"
-            }
+        & $runScript @runArgs
+        $runExit = $LASTEXITCODE
+
+        if (Test-Path -LiteralPath $metaPath) {
+            $meta = Get-Content -LiteralPath $metaPath -Raw -Encoding utf8 | ConvertFrom-Json
+            Show-BenchmarkHeadlineTable -ResultsDir $meta.results_dir -StatePath $StatePath `
+                -RunId $meta.run_id -TfvarsPath $tfvarsFull -RepoRoot $repoRoot `
+                -ControllerExitCode $runExit
+        } else {
+            Write-Warning "Missing $metaPath — headline table skipped."
+        }
+
+        if (-not $interactive) {
+            Invoke-Cleanup
             exit $runExit
         }
-        if ($choice -eq '1') {
-            break
+
+        while ($true) {
+            Write-Host ''
+            Write-Host '  [1] Rerun the benchmark' -ForegroundColor Yellow
+            Write-Host '  [2] Destroy the AWS environment (terraform destroy)' -ForegroundColor Yellow
+            $choice = Read-Host 'Enter 1 or 2'
+            if ($choice -eq '2') {
+                Invoke-Cleanup
+                exit $runExit
+            }
+            if ($choice -eq '1') {
+                break
+            }
+            Write-Host 'Please enter 1 or 2.' -ForegroundColor Red
         }
-        Write-Host 'Please enter 1 or 2.' -ForegroundColor Red
     }
+} catch {
+    Write-Error "Run failed: $($_.Exception.Message)"
+    Invoke-Cleanup
+    exit 1
 }
