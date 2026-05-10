@@ -40,7 +40,8 @@ COPY plans/ plans/
 COPY docker/benchmark-publish-module.sh docker/benchmark-publish-module.sh
 
 # Place the controller binary where Run-Benchmark-Aws-Controller.ps1 auto-discovers it.
-COPY --from=controller-builder /src/crates/benchmark-controller/target/release/benchmark-controller /workspace/crates/benchmark-controller/target/release/benchmark-controller
+# The script resolves $repoRoot/target/release/benchmark-controller (repoRoot = /workspace).
+COPY --from=controller-builder /src/crates/benchmark-controller/target/release/benchmark-controller /workspace/target/release/benchmark-controller
 
 COPY docker/operator-entrypoint.sh /usr/local/bin/operator-entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/operator-entrypoint.sh /workspace/docker/benchmark-publish-module.sh \
