@@ -16,7 +16,7 @@ variable "topology" {
 
 variable "arcane_cluster_count" {
   type        = number
-  description = "For AwsArcanePerHost only: number of arcane-cluster EC2 instances."
+  description = "For AwsArcanePerHost only: number of arcane-node EC2 instances."
   default     = 2
   validation {
     condition     = var.topology != "AwsArcanePerHost" || (var.arcane_cluster_count >= 1 && var.arcane_cluster_count <= 32)

@@ -162,7 +162,7 @@ echo "==> starting clusters (Redis=$REDIS_HOST, ST=$SPACE_HOST)"
 for i in "${!CLUSTER_INST[@]}"; do
     cid="${CLUSTER_INST[$i]}"
     cuid="${CLUSTER_IDS[$i]}"
-    ssm_run "$cid" "docker rm -f bench-cluster 2>/dev/null || true; docker run -d --name bench-cluster --restart unless-stopped --ulimit nofile=65536:65536 --network host -e CLUSTER_ID=$cuid -e REDIS_URL=redis://${REDIS_HOST}:6379 -e CLUSTER_WS_PORT=8090 -e SPACETIMEDB_URI=http://${SPACE_HOST}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BENCHMARK_IMAGE benchmark-cluster" &
+    ssm_run "$cid" "docker rm -f bench-cluster 2>/dev/null || true; docker run -d --name bench-cluster --restart unless-stopped --ulimit nofile=65536:65536 --network host -e NODE_ID=$cuid -e REDIS_URL=redis://${REDIS_HOST}:6379 -e NODE_WS_PORT=8090 -e SPACETIMEDB_URI=http://${SPACE_HOST}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BENCHMARK_IMAGE benchmark-cluster" &
 done
 wait
 

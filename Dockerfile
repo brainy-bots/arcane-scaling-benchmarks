@@ -7,7 +7,7 @@
 #   docker run IMG spacetime start                     # SpacetimeDB server role
 #   docker run IMG benchmark-publish-module            # Publish WASM module into an already-running SpacetimeDB
 #   docker run IMG arcane-manager                      # Arcane manager role
-#   docker run IMG benchmark-cluster                   # Arcane cluster role (physics + game actions)
+#   docker run IMG benchmark-cluster                   # Arcane node role (physics + game actions)
 #   docker run IMG arcane-swarm <args>                 # Load generator role
 #   docker run IMG run-benchmark <...>                 # Driver: reads -ConfigFile; scenario is selected by the config
 #
@@ -43,7 +43,7 @@ COPY arcane/ arcane/
 COPY arcane_swarm/ arcane_swarm/
 COPY crates/ crates/
 
-# arcane-manager (HTTP join server) and arcane-cluster are both in the arcane
+# arcane-manager (HTTP join server) and arcane-node are both in the arcane
 # workspace; build them with the features they need.
 RUN cargo build --release --manifest-path arcane/Cargo.toml \
       --bin arcane-manager --features manager

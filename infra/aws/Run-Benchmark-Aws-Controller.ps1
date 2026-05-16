@@ -238,7 +238,7 @@ for ($i = 0; $i -lt $clusterInstanceIds.Count; $i++) {
     $cid     = $clusterInstanceIds[$i]
     $cuid    = $clusterIds[$i]
     $clusPort = 8090
-    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host -e CLUSTER_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e CLUSTER_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BenchmarkImage benchmark-cluster"
+    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host -e NODE_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e NODE_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BenchmarkImage benchmark-cluster"
     $cmdId = Invoke-Ssm -InstanceId $cid -Commands @("docker rm -f bench-cluster 2>/dev/null || true", $clRun) -Comment "cluster $i"
     Wait-Ssm -CommandId $cmdId -InstanceId $cid | Out-Null
 }

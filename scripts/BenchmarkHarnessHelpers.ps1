@@ -5,8 +5,8 @@
 # JSONC reader (used by Merge-ConfigFileParameters and by the AWS pre-SSM validator).
 . (Join-Path $PSScriptRoot 'BenchmarkConfigJsonc.ps1')
 
-# Poll one cluster's /stats endpoint exposed by arcane-infra (CLUSTER_STATS_PORT,
-# default CLUSTER_WS_PORT + 1). Returns the parsed JSON object or $null on any
+# Poll one cluster's /stats endpoint exposed by arcane-infra (NODE_STATS_PORT,
+# default NODE_WS_PORT + 1). Returns the parsed JSON object or $null on any
 # failure. Intentionally forgiving — callers decide whether a null result is fatal.
 function Get-ArcaneClusterStatsJson {
   param(
@@ -736,9 +736,9 @@ function Run-Scenario-Arcane {
     $env:SPACETIMEDB_PERSIST_BATCH_SIZE = $PersistBatchSize.ToString()
 
     for ($i = 0; $i -lt $NumServers; $i++) {
-      $env:CLUSTER_ID = $clusterIds[$i]
+      $env:NODE_ID = $clusterIds[$i]
       $wsPort = $clusterBasePort + ($i * $ArcaneClusterPortStride)
-      $env:CLUSTER_WS_PORT = $wsPort.ToString()
+      $env:NODE_WS_PORT = $wsPort.ToString()
       $neighborList = $clusterIds | Where-Object { $_ -ne $clusterIds[$i] }
       $env:NEIGHBOR_IDS = ($neighborList -join ',')
 

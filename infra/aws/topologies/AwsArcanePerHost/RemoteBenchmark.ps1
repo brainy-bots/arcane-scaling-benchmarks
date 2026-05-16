@@ -160,10 +160,10 @@ docker rm -f arcane-bench-cluster 2>/dev/null || true
 # 2 clusters, each cluster holds ~3000 client sockets, well under 65536.
 docker run -d --name arcane-bench-cluster --network host \
   --ulimit nofile=65536:65536 \
-  -e CLUSTER_ID="__CLUSTER_ID__" \
+  -e NODE_ID="__CLUSTER_ID__" \
   -e REDIS_URL="redis://__REDIS_IP__:6379" \
   -e NEIGHBOR_IDS="__NEIGHBORS__" \
-  -e CLUSTER_WS_PORT=8090 \
+  -e NODE_WS_PORT=8090 \
   -e SPACETIMEDB_URI="http://__ST_IP__:3000" \
   -e SPACETIMEDB_DATABASE=arcane \
   -e SPACETIMEDB_PERSIST=1 \
