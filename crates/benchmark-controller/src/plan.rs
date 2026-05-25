@@ -47,6 +47,13 @@ pub struct PhaseGate {
     /// drops below this for the breach window.
     #[serde(default)]
     pub min_entities: Option<u64>,
+    /// Minimum total entities across ALL clusters. Phase fails if the sum
+    /// of `entities_current` across clusters stays below this for the breach
+    /// window. Auto-injected by the controller at 80% of `target_players`
+    /// when not explicitly set — catches fd exhaustion and silent connection
+    /// drops where latency stays low but the system isn't actually loaded.
+    #[serde(default)]
+    pub min_total_entities: Option<u64>,
 }
 
 /// Parse a TOML test plan. Unknown top-level or per-section keys are

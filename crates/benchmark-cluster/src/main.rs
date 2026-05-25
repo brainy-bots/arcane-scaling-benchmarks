@@ -41,6 +41,8 @@ fn parse_uuids(s: &str) -> Vec<Uuid> {
 }
 
 fn main() -> Result<(), String> {
+    arcane_infra::startup::raise_and_assert_fd_limit()?;
+
     let cluster_id =
         env::var("NODE_ID").map_err(|_| "NODE_ID env var required (UUID)".to_string())?;
     let cluster_id =

@@ -12,6 +12,8 @@
 //!   (max across clusters). This is a tick-time proxy until driver-reported
 //!   latency lands in the snapshot via a dedicated telemetry message.
 //! - `min_entities`: min of `entities_current` across clusters. Direct.
+//! - `min_total_entities`: sum of `entities_current` across all clusters.
+//!   Auto-injected at 80% of `target_players` when not explicitly set.
 //! - `max_error_rate`: not yet wired — the snapshot doesn't carry an
 //!   error-rate field today. Configured but ignored; lands when the driver
 //!   pushes per-tick error counters into the telemetry stream.
@@ -68,6 +70,7 @@ impl ValidityGate {
         if self.config.max_p99_latency_ms.is_none()
             && self.config.min_entities.is_none()
             && self.config.max_error_rate.is_none()
+            && self.config.min_total_entities.is_none()
         {
             return Evaluation::Pass;
         }
@@ -117,6 +120,15 @@ impl ValidityGate {
                 .min()
                 .unwrap_or(u64::MAX);
             if snap.clusters.is_empty() || min_seen < min_entities {
+                return true;
+            }
+        }
+        if let Some(min_total) = self.config.min_total_entities {
+            let total: u64 = snap.clusters.values().map(|c| c.entities_current).sum();
+            if snap.clusters.is_empty() || total < min_total {
+                eprintln!(
+                    "gate: total entity count {total} below minimum {min_total}"
+                );
                 return true;
             }
         }

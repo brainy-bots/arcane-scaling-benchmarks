@@ -135,9 +135,16 @@ where
         // run it. Wrapping each phase in its own scheduler call keeps the
         // results-writing boundary clean and lets us record per-phase
         // outcomes against the same phase the gate was reset for.
-        live_gate
-            .start_phase(phase.gate.clone().unwrap_or_default())
-            .await;
+        let mut gate_config = phase.gate.clone().unwrap_or_default();
+        if phase.target_players > 0 && gate_config.min_total_entities.is_none() {
+            let auto_min = (phase.target_players as f64 * 0.8) as u64;
+            eprintln!(
+                "phase {:?}: auto-injecting min_total_entities={auto_min} (80% of {})",
+                phase.name, phase.target_players
+            );
+            gate_config.min_total_entities = Some(auto_min);
+        }
+        live_gate.start_phase(gate_config).await;
 
         let phase_started = now_unix_ms();
         let phase_started_inst = Instant::now();
