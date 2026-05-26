@@ -9,6 +9,7 @@
 pub mod dashboard;
 pub mod gate;
 pub mod orchestrator_client;
+pub mod phase_metrics;
 pub mod plan;
 pub mod results;
 pub mod run;
@@ -18,6 +19,7 @@ pub mod sse_consumer;
 #[cfg(test)]
 mod tests {
     mod gate;
+    mod phase_metrics;
     mod plan;
     mod results;
     mod scheduler;

@@ -10,6 +10,48 @@ use crate::plan::TestPlan;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Aggregated cluster-side metrics over a phase's hold window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct ClusterPhaseMetrics {
+    pub total_entities: u64,
+    pub cluster_count: usize,
+    pub worst_tick_us: u64,
+    pub mean_tick_us: u64,
+    pub total_bytes_in: u64,
+    pub total_bytes_out: u64,
+    pub snapshot_count: u64,
+}
+
+/// Per-driver cumulative metrics at phase boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct DriverPhaseMetrics {
+    pub driver_count: usize,
+    pub total_ok: u64,
+    pub total_err: u64,
+    pub latency_sum_us: u64,
+    pub latency_samples: u64,
+    pub mean_latency_ms: f64,
+    pub error_rate: f64,
+}
+
+/// Headline numbers matching the README format. Computed from the top
+/// passing tier's driver metrics at phase-end minus phase-start.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct HeadlineSummary {
+    pub top_tier_name: String,
+    pub top_tier_ccu: u32,
+    pub driver_count: usize,
+    pub mean_latency_ms: f64,
+    pub median_latency_ms: f64,
+    pub min_latency_ms: f64,
+    pub max_latency_ms: f64,
+    pub total_round_trips: u64,
+    pub total_errors: u64,
+    pub error_rate_pct: f64,
+}
+
 /// Per-phase result file shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PhaseResult {
@@ -18,12 +60,10 @@ pub struct PhaseResult {
     pub started_at_unix_ms: u128,
     pub ended_at_unix_ms: u128,
     pub outcome: PhaseOutcome,
-    /// Aggregated cluster /stats deltas over the phase window.
     #[serde(default)]
-    pub cluster_deltas: serde_json::Value,
-    /// Aggregated driver-reported metrics over the phase window.
+    pub cluster_metrics: ClusterPhaseMetrics,
     #[serde(default)]
-    pub driver_metrics: serde_json::Value,
+    pub driver_metrics: DriverPhaseMetrics,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -46,6 +86,8 @@ pub struct RunManifest {
     pub ended_at_unix_ms: u128,
     pub phase_outcomes: Vec<PhaseOutcomeEntry>,
     pub overall: OverallOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headline: Option<HeadlineSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

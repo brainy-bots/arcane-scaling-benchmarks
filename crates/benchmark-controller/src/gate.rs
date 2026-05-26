@@ -126,9 +126,7 @@ impl ValidityGate {
         if let Some(min_total) = self.config.min_total_entities {
             let total: u64 = snap.clusters.values().map(|c| c.entities_current).sum();
             if snap.clusters.is_empty() || total < min_total {
-                eprintln!(
-                    "gate: total entity count {total} below minimum {min_total}"
-                );
+                eprintln!("gate: total entity count {total} below minimum {min_total}");
                 return true;
             }
         }

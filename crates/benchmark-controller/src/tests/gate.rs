@@ -23,6 +23,7 @@ fn snap_with_tick_us(last_tick_us: u64) -> TelemetrySnapshot {
         fleet: Vec::new(),
         recent_commands: Vec::new(),
         clusters,
+        driver_metrics: HashMap::new(),
     }
 }
 
@@ -43,6 +44,7 @@ fn snap_with_entities(entities_current: u64) -> TelemetrySnapshot {
         fleet: Vec::new(),
         recent_commands: Vec::new(),
         clusters,
+        driver_metrics: HashMap::new(),
     }
 }
 
@@ -167,6 +169,7 @@ fn snap_multi_cluster(entities: &[u64]) -> TelemetrySnapshot {
         fleet: Vec::new(),
         recent_commands: Vec::new(),
         clusters,
+        driver_metrics: HashMap::new(),
     }
 }
 
