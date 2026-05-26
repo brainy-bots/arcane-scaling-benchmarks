@@ -1,0 +1,109 @@
+# Extended headline benchmark: 1,500 → 18,000 CCU @ 60 Hz / 1 KB.
+# Same structure as headline-13500 but continues beyond to find the ceiling.
+# Controller stops on first gate failure and reports last passing tier.
+
+[plan]
+name = "headline-18000"
+description = "18,000 CCU ceiling test @ 60 Hz / 1 KB user_data / 12 drivers"
+
+[[phases]]
+name = "tier-1500-aggregate"
+target_players = 1500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-3000-aggregate"
+target_players = 3000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-4500-aggregate"
+target_players = 4500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-6000-aggregate"
+target_players = 6000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-7500-aggregate"
+target_players = 7500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-9000-aggregate"
+target_players = 9000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-10500-aggregate"
+target_players = 10500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-12000-aggregate"
+target_players = 12000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-13500-aggregate"
+target_players = 13500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-15000-aggregate"
+target_players = 15000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-16500-aggregate"
+target_players = 16500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "tier-18000-aggregate"
+target_players = 18000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+
+[[phases]]
+name = "cooldown"
+target_players = 0
+spawn_delay_ms = 25
+hold_seconds = 10

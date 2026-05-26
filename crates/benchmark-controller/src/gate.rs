@@ -64,6 +64,10 @@ impl ValidityGate {
         self.consecutive_breaches = 0;
     }
 
+    pub fn set_breach_window(&mut self, n: u32) {
+        self.breach_window = n;
+    }
+
     /// Feed one snapshot.
     pub fn evaluate(&mut self, snap: &TelemetrySnapshot) -> Evaluation {
         // No configured axis = phase auto-passes.

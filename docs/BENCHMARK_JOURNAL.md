@@ -747,6 +747,50 @@ Terraform fleet destroyed (37 resources). Hit a `DependencyViolation` on the sec
 
 ---
 
+## 2026-05-26 — DeltaCache key collision fix + sequence-tagged RTT validation on AWS
+
+### Context
+
+The FlatBuffers wire migration (arcane#166) changed the binary layout of broadcast frames. FlatBuffer byte layout places vtables and offsets in the first 32 bytes; payload fields (tick, seq, timestamp) start around byte 36. The `DeltaCache` in `arcane_swarm` used a 32-byte prefix as the cache key. This caused all broadcasts from the same cluster to collide on the same key, returning stale cached `client_seqs` maps and preventing round-trip time matching. Result: `latency_samples: 0` on every AWS run since the migration, while local single-cluster tests still worked (one cluster = one key = no collision).
+
+### Fix
+
+Changed the cache key from `[u8; 32]` prefix to a `u64` SipHash of the full frame (`std::collections::hash_map::DefaultHasher`). Committed as `678b7b4` on `feat/166-flatbuffers-wire-validation` in `arcane_swarm`. Four regression tests added: distinct keys for distinct frames, lookup correctness, eviction capacity, hit/miss counters.
+
+### Verification — local orchestrated mode
+
+Ran the full orchestrated stack locally (orchestrator + 1 cluster + 1 driver in Docker). Confirmed `latency_samples` grows monotonically across snapshots (975 → 1303 → 1678). Fix works.
+
+### Verification — AWS (RunId `20260526_221058`)
+
+**Setup.** Image `ghcr.io/brainy-bots/arcane-benchmark:seq-rtt`. Plan `smoke-2cluster-aws` (2 phases: 50 CCU warmup, 100 CCU ramp, 30 s each). Fleet: 4 clusters, 12 drivers, Redis, SpacetimeDB on `AwsArcanePerHost` topology.
+
+**Result.** Overall **pass**. Both phases green, zero errors.
+
+| Phase | CCU | Entities | Clusters | Latency samples | Mean RTT | Total OK |
+|---|---|---|---|---|---|---|
+| tiny-warmup | 50 | 1,200 | 4 | 7,669 | 14.26 ms | 305,608 |
+| tiny-ramp | 100 | 1,240 | 4 | 4,823 | 13.39 ms | 174,409 |
+
+Headline: **13.40 ms mean RTT** at 100 CCU, median 13.44 ms, range 12.56–14.24 ms across 12 drivers. 174,409 round-trips, 0 errors. Cluster ticks: mean 574 µs, worst 652 µs.
+
+### Interpretation
+
+The fix restores sequence-tagged round-trip latency measurement. The 13.4 ms mean is consistent with the half-tick-period baseline at 20 Hz (50 ms / 2 ≈ 25 ms minus intra-tick processing).
+
+**Biased-subset caveat.** RTT is measured only on broadcasts triggered by entity state changes (velocity change or resync every ~60 ticks). At 2 actions/sec and 20 Hz tick rate, this yields ~1.6 samples/sec/player — roughly 80% of actions produce a matchable broadcast. The remaining ~20% are dead-reckoned (no broadcast, no RTT sample). This means the reported latency is biased toward "actions that caused a state change" and does not represent the latency of dead-reckoned frames. This is the correct subset to measure (these are the frames the client cares about), but it should be disclosed when quoting externally.
+
+**Stale runs.** `20260526_220317` failed (stale Terraform state file with old instance IDs). `20260526_220414` completed but used a pre-rebuild controller binary that predated the metrics accumulator — phase JSONs had empty metrics. Marked with `STALE.txt`, superseded by `20260526_221058`.
+
+### Next
+
+1. Destroy the AWS fleet (still running).
+2. Advance `arcane_swarm` submodule pointer in benchmarks repo + commit controller improvements (breach window widening, ulimit fix) + this journal entry.
+3. Follow-up issue: controller gate should refuse Pass when `latency_samples=0` if the run mode claims to measure latency — prevents false-positive benchmarks from instrumentation regressions.
+4. Resume headline-scale runs with the fixed image to get latency data at 13,500+ CCU.
+
+---
+
 ## What this journal captures vs what it doesn't
 
 **Captures.** The experimental chain — hypothesis, setup, result, interpretation, next. Each entry links to a specific `RunId` for anyone who wants to inspect the raw manifest/CSV/diag logs.

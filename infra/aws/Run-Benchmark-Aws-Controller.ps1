@@ -97,8 +97,8 @@ $driverInstanceIds   = @($state.BenchmarkInstanceIds)
 $spacetimeInstanceId = $state.SpacetimeInstanceId
 $redisInstanceId     = $state.RedisInstanceId
 
-if (-not $managerInstanceId)   { throw "State missing ManagerInstanceId — provision with arcane_per_host topology" }
-if (-not $managerPublicDns)    { throw "State missing ManagerPublicDns — bump Terraform module to expose it" }
+if (-not $managerInstanceId)   { throw "State missing ManagerInstanceId - provision with arcane_per_host topology" }
+if (-not $managerPublicDns)    { throw "State missing ManagerPublicDns - bump Terraform module to expose it" }
 if ($driverInstanceIds.Count -lt 1) { throw "State has no driver instances" }
 
 if (-not $ResultsDir) {
@@ -238,7 +238,7 @@ for ($i = 0; $i -lt $clusterInstanceIds.Count; $i++) {
     $cid     = $clusterInstanceIds[$i]
     $cuid    = $clusterIds[$i]
     $clusPort = 8090
-    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host -e NODE_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e NODE_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BenchmarkImage benchmark-cluster"
+    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host --ulimit nofile=65536:65536 -e NODE_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e NODE_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BenchmarkImage benchmark-cluster"
     $cmdId = Invoke-Ssm -InstanceId $cid -Commands @("docker rm -f bench-cluster 2>/dev/null || true", $clRun) -Comment "cluster $i"
     Wait-Ssm -CommandId $cmdId -InstanceId $cid | Out-Null
 }
@@ -265,7 +265,7 @@ Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $managerInstanceId -Commands @($mgrC
 # ── 5. Start drivers in orchestrated mode ────────────────────────────────────
 Write-Host "==> starting $($driverInstanceIds.Count) drivers in orchestrated mode"
 $orchUrlInternal = "ws://${managerPrivateIp}:${orchDriverPort}"
-$drvRun = "docker run -d --name bench-driver --restart unless-stopped --network host -e ORCHESTRATOR_URL=$orchUrlInternal $BenchmarkImage arcane-swarm --backend arcane --arcane-manager http://${managerPrivateIp}:8081 --orchestrator-url $orchUrlInternal --tick-rate 60 --max-players 4000 --user-data-bytes 1000 --inter-spawn-delay-ms 8 --max-players-per-driver 4000 --burst-enabled --burst-period-secs 30 --burst-cohort-percent 20 --burst-actions-per-player 10 --burst-window-ms 500 --zone-event-period-secs 30 --zone-event-window-ms 500 --actions-per-sec 2 --read-rate 5 --run-forever"
+$drvRun = "docker run -d --name bench-driver --restart unless-stopped --network host --ulimit nofile=65536:65536 -e ORCHESTRATOR_URL=$orchUrlInternal $BenchmarkImage arcane-swarm --backend arcane --arcane-manager http://${managerPrivateIp}:8081 --orchestrator-url $orchUrlInternal --tick-rate 60 --max-players 4000 --user-data-bytes 1000 --inter-spawn-delay-ms 8 --max-players-per-driver 4000 --burst-enabled --burst-period-secs 30 --burst-cohort-percent 20 --burst-actions-per-player 10 --burst-window-ms 500 --zone-event-period-secs 30 --zone-event-window-ms 500 --actions-per-sec 2 --read-rate 5 --run-forever"
 foreach ($did in $driverInstanceIds) {
     Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $did -Commands @("docker rm -f bench-driver 2>/dev/null || true", $drvRun) -Comment "driver") -InstanceId $did | Out-Null
 }
@@ -281,7 +281,7 @@ $ready = $false
 while ((Get-Date) -lt $readyDeadline) {
     # `--max-time 3` cuts the SSE stream at 3s. We grab the first `data:`
     # line, parse it, check fleet size.
-    $raw = & curl -sN --max-time 3 "${orchUrlPublic}/telemetry/stream" 2>$null
+    $raw = & curl.exe -s -N --max-time 3 "${orchUrlPublic}/telemetry/stream" 2>$null
     if ($raw) {
         $firstData = ($raw -split "`n" | Where-Object { $_ -match '^data: ' } | Select-Object -First 1)
         if ($firstData) {

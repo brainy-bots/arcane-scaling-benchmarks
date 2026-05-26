@@ -36,6 +36,10 @@ impl LiveGateState {
         *self.last.write().await = Evaluation::Pass;
     }
 
+    pub async fn set_breach_window(&self, n: u32) {
+        self.gate.lock().await.set_breach_window(n);
+    }
+
     /// Feed one snapshot. Used by the SSE consumer.
     pub async fn ingest(&self, snap: &TelemetrySnapshot) {
         let mut gate = self.gate.lock().await;
