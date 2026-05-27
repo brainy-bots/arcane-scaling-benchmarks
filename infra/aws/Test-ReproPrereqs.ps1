@@ -64,9 +64,13 @@ $checks.Add((Test-CommandAvailable -Name 'aws'))
 $checks.Add((Test-CurlAvailable))
 
 $ctrlCandidates = @(
+    (Join-Path $repoRoot 'target/release/benchmark-controller.exe'),
     (Join-Path $repoRoot 'target/release/benchmark-controller'),
+    (Join-Path $repoRoot 'target/debug/benchmark-controller.exe'),
     (Join-Path $repoRoot 'target/debug/benchmark-controller'),
+    (Join-Path $repoRoot 'crates/benchmark-controller/target/release/benchmark-controller.exe'),
     (Join-Path $repoRoot 'crates/benchmark-controller/target/release/benchmark-controller'),
+    (Join-Path $repoRoot 'crates/benchmark-controller/target/debug/benchmark-controller.exe'),
     (Join-Path $repoRoot 'crates/benchmark-controller/target/debug/benchmark-controller')
 )
 $ctrlPath = $ctrlCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1

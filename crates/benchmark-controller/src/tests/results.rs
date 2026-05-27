@@ -52,6 +52,7 @@ fn synth_phase_result(idx: usize, outcome: PhaseOutcome) -> PhaseResult {
             mean_tick_us: 28_000,
             total_bytes_in: 500_000_000,
             total_bytes_out: 1_000_000_000,
+            total_broadcast_lagged_events: 0,
             snapshot_count: 15,
         },
         driver_metrics: DriverPhaseMetrics {
@@ -63,6 +64,7 @@ fn synth_phase_result(idx: usize, outcome: PhaseOutcome) -> PhaseResult {
             mean_latency_ms: 10.0,
             error_rate: 0.0,
         },
+        redis_metrics: None,
     }
 }
 
@@ -94,12 +96,14 @@ fn synth_test_plan() -> TestPlan {
         plan: PlanMeta {
             name: "headline-13500".into(),
             description: String::new(),
+            tick_rate_hz: 60,
         },
         phases: vec![Phase {
             name: "warmup".into(),
             target_players: 1000,
             spawn_delay_ms: 50,
             hold_seconds: 60,
+            warmup_timeout_seconds: 120,
             gate: None,
         }],
     }

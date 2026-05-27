@@ -29,6 +29,7 @@ pub struct PhaseMetricsAccumulator {
     tick_us_count: u64,
     total_bytes_in: u64,
     total_bytes_out: u64,
+    total_broadcast_lagged_events: u64,
     /// Driver cumulative metrics at phase start (first snapshot that has them).
     driver_baseline: HashMap<String, DriverCumulative>,
     /// Driver cumulative metrics from the latest snapshot.
@@ -47,6 +48,7 @@ impl PhaseMetricsAccumulator {
             tick_us_count: 0,
             total_bytes_in: 0,
             total_bytes_out: 0,
+            total_broadcast_lagged_events: 0,
             driver_baseline: HashMap::new(),
             driver_latest: HashMap::new(),
             baseline_captured: false,
@@ -66,6 +68,7 @@ impl PhaseMetricsAccumulator {
             self.tick_us_count += 1;
             self.total_bytes_in += c.bytes_in;
             self.total_bytes_out += c.bytes_out;
+            self.total_broadcast_lagged_events += c.broadcast_lagged_events;
         }
         self.total_entities_sum += total_ent;
         self.cluster_count_sum += snap.clusters.len() as u64;
@@ -96,6 +99,14 @@ impl PhaseMetricsAccumulator {
         }
     }
 
+    /// Discard accumulated data and reset for a fresh measurement window.
+    /// Used after warmup completes — the baseline is recaptured from the
+    /// next snapshot so that ramp-up time doesn't contaminate the
+    /// measurement period.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
     /// Produce the phase summary and reset the accumulator for the next phase.
     pub fn phase_summary(&mut self) -> (ClusterPhaseMetrics, DriverPhaseMetrics) {
         let cluster = ClusterPhaseMetrics {
@@ -114,6 +125,7 @@ impl PhaseMetricsAccumulator {
                 .unwrap_or(0),
             total_bytes_in: self.total_bytes_in,
             total_bytes_out: self.total_bytes_out,
+            total_broadcast_lagged_events: self.total_broadcast_lagged_events,
             snapshot_count: self.snapshot_count,
         };
 

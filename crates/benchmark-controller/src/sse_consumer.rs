@@ -50,6 +50,12 @@ impl LiveGateState {
     pub async fn current(&self) -> Evaluation {
         *self.last.read().await
     }
+
+    /// Acquire the inner gate for phase-end evaluation. The caller holds
+    /// the lock briefly to call `evaluate_phase_end`.
+    pub async fn gate_lock(&self) -> tokio::sync::MutexGuard<'_, ValidityGate> {
+        self.gate.lock().await
+    }
 }
 
 /// `GateSignal` impl that reads `LiveGateState::current` and maps to

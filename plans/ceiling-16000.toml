@@ -8,6 +8,7 @@
 [plan]
 name = "ceiling-16000"
 description = "Ceiling hunt: 13,500 → 16,000 in 500-step increments, 50 ms gate"
+tick_rate_hz = 60
 
 [[phases]]
 name = "tier-13500-baseline"
@@ -16,6 +17,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-14000"
@@ -24,6 +28,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-14500"
@@ -32,6 +39,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-15000"
@@ -40,6 +50,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-15500"
@@ -48,6 +61,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-16000-ceiling"
@@ -56,6 +72,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "cooldown"

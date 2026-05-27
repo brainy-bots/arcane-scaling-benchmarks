@@ -15,13 +15,8 @@
     2. THIS SCRIPT      — drives the run via SSM + the local controller.
     3. terraform destroy — tear down.
 
-  Differences from Run-Benchmark-Aws.ps1:
-  - No per-tier PowerShell loop; the local benchmark-controller drives the
-    schedule against the orchestrator's HTTP API.
-  - Drivers run with --orchestrator-url instead of being driven via per-driver
-    SSM RunCommand fan-out.
-  - The orchestrator container runs alongside arcane-manager on the
-    manager EC2.
+  The local benchmark-controller drives the schedule against the
+  orchestrator's HTTP API. Drivers run with --orchestrator-url.
 
 .PARAMETER StatePath
   JSON produced by `terraform output -json benchmark_state` in
@@ -67,7 +62,13 @@ if (-not (Test-Path $PlanFile))  { throw "Plan file not found: $PlanFile" }
 # Resolve controller binary.
 if (-not $ControllerBinary) {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-    $candidate = Join-Path $repoRoot 'target/release/benchmark-controller'
+    $candidate = Join-Path $repoRoot 'target/release/benchmark-controller.exe'
+    if (-not (Test-Path $candidate)) {
+        $candidate = Join-Path $repoRoot 'target/release/benchmark-controller'
+    }
+    if (-not (Test-Path $candidate)) {
+        $candidate = Join-Path $repoRoot 'target/debug/benchmark-controller.exe'
+    }
     if (-not (Test-Path $candidate)) {
         $candidate = Join-Path $repoRoot 'target/debug/benchmark-controller'
     }
@@ -238,7 +239,8 @@ for ($i = 0; $i -lt $clusterInstanceIds.Count; $i++) {
     $cid     = $clusterInstanceIds[$i]
     $cuid    = $clusterIds[$i]
     $clusPort = 8090
-    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host --ulimit nofile=65536:65536 -e NODE_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e NODE_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BenchmarkImage benchmark-cluster"
+    $neighbors = @($clusterIds | Where-Object { $_ -ne $cuid }) -join ','
+    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host --ulimit nofile=65536:65536 -e NODE_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e NEIGHBOR_IDS=$neighbors -e NODE_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 -e BENCHMARK_TICK_RATE_HZ=60 -e ARCANE_BROADCAST_CHANNEL_CAP=256 $BenchmarkImage benchmark-cluster"
     $cmdId = Invoke-Ssm -InstanceId $cid -Commands @("docker rm -f bench-cluster 2>/dev/null || true", $clRun) -Comment "cluster $i"
     Wait-Ssm -CommandId $cmdId -InstanceId $cid | Out-Null
 }
@@ -307,7 +309,8 @@ $ctlArgs = @(
     '--plan',             $PlanFile,
     '--orchestrator-url', $orchUrlPublic,
     '--results-dir',      $ResultsDir,
-    '--submitter',        "operator-$env:USERNAME"
+    '--submitter',        "operator-$env:USERNAME",
+    '--redis-url',        "redis://${redisHost}:6379"
 )
 if ($S3UploadResults) {
     $ctlArgs += '--s3-bucket', $bucket
@@ -322,9 +325,13 @@ Write-Host "==> capturing container logs"
 $logsDir = Join-Path $ResultsDir "container-logs"
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 foreach ($id in @($managerInstanceId)) {
-    $cmdId = Invoke-Ssm -InstanceId $id -Commands @("docker logs bench-orchestrator 2>&1 | tail -200", "echo ---SEPARATOR---", "docker logs bench-manager 2>&1 | tail -100") -Comment "logs manager"
-    $r = Wait-Ssm -CommandId $cmdId -InstanceId $id -TimeoutSec 60
-    Set-Content -Path (Join-Path $logsDir "manager-$id.log") -Value ($r.StandardOutputContent + "`n---STDERR---`n" + $r.StandardErrorContent)
+    try {
+        $cmdId = Invoke-Ssm -InstanceId $id -Commands @("docker logs bench-orchestrator 2>&1 | tail -200", "echo ---SEPARATOR---", "docker logs bench-manager 2>&1 | tail -100") -Comment "logs manager"
+        $r = Wait-Ssm -CommandId $cmdId -InstanceId $id -TimeoutSec 60
+        Set-Content -Path (Join-Path $logsDir "manager-$id.log") -Value ($r.StandardOutputContent + "`n---STDERR---`n" + $r.StandardErrorContent)
+    } catch {
+        Write-Host "   log fetch failed for manager $id" -ForegroundColor Yellow
+    }
 }
 for ($i = 0; $i -lt $driverInstanceIds.Count; $i++) {
     $id = $driverInstanceIds[$i]

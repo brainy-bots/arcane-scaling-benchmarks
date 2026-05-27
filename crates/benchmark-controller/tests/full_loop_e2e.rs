@@ -33,7 +33,7 @@ impl ClusterEndpoint for IdleEndpoint {
         Ok(ClusterStats {
             bytes_in: 0,
             bytes_out: 0,
-            last_tick_us: 33_000,
+            last_tick_us: 5_000, // 5 ms — well within 16.67 ms budget at 60 Hz
             broadcast_lagged_events: 0,
             entities_current: 1000,
             sampled_at: Instant::now(),
@@ -161,18 +161,21 @@ const SMOKE_PLAN: &str = r#"
 [plan]
 name = "smoke"
 description = "local-only end-to-end smoke for the controller binary path"
+tick_rate_hz = 60
 
 [[phases]]
 name = "tiny-warmup"
 target_players = 50
 spawn_delay_ms = 5
-hold_seconds = 0
+hold_seconds = 1
+warmup_timeout_seconds = 10
 
 [[phases]]
 name = "tiny-ramp"
 target_players = 100
 spawn_delay_ms = 5
-hold_seconds = 0
+hold_seconds = 1
+warmup_timeout_seconds = 10
 [phases.gate]
 min_entities = 100
 "#;
@@ -203,6 +206,7 @@ async fn full_loop_writes_phase_files_and_manifest() {
         results_dir: results_dir.clone(),
         submitter: "smoke-test".to_string(),
         enable_dashboard: false,
+        redis_url: None,
     };
     let outcome = run(cfg, Arc::new(NoopUploaderExt))
         .await

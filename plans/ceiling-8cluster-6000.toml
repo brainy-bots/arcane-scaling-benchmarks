@@ -1,0 +1,268 @@
+# Ceiling test: 8 clusters × c6in.4xlarge (50 Gbps), 12 drivers × c6in.4xlarge
+#
+# Expected bandwidth ceiling ~3,900 total at 1 KB user_data, 60 Hz.
+# 250-step increments from 500 → 6,000 to find the real limit.
+
+[plan]
+name = "ceiling-8cluster-6000"
+description = "8-cluster ceiling: 500 → 6,000 in 250-step increments, 50 ms latency gate"
+tick_rate_hz = 60
+
+[[phases]]
+name = "tier-500"
+target_players = 500
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-750"
+target_players = 750
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-1000"
+target_players = 1000
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-1250"
+target_players = 1250
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-1500"
+target_players = 1500
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-1750"
+target_players = 1750
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-2000"
+target_players = 2000
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-2250"
+target_players = 2250
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-2500"
+target_players = 2500
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-2750"
+target_players = 2750
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-3000"
+target_players = 3000
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-3250"
+target_players = 3250
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-3500"
+target_players = 3500
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-3750"
+target_players = 3750
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-4000"
+target_players = 4000
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-4250"
+target_players = 4250
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-4500"
+target_players = 4500
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-4750"
+target_players = 4750
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-5000"
+target_players = 5000
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-5250"
+target_players = 5250
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-5500"
+target_players = 5500
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-5750"
+target_players = 5750
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-6000"
+target_players = 6000
+spawn_delay_ms = 25
+hold_seconds = 20
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "cooldown"
+target_players = 0
+spawn_delay_ms = 25
+hold_seconds = 10

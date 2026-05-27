@@ -7,6 +7,7 @@
 //! TelemetryArchive pattern).
 
 use crate::plan::TestPlan;
+use crate::redis_monitor::RedisPhaseMetrics;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -20,6 +21,7 @@ pub struct ClusterPhaseMetrics {
     pub mean_tick_us: u64,
     pub total_bytes_in: u64,
     pub total_bytes_out: u64,
+    pub total_broadcast_lagged_events: u64,
     pub snapshot_count: u64,
 }
 
@@ -64,6 +66,8 @@ pub struct PhaseResult {
     pub cluster_metrics: ClusterPhaseMetrics,
     #[serde(default)]
     pub driver_metrics: DriverPhaseMetrics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redis_metrics: Option<RedisPhaseMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

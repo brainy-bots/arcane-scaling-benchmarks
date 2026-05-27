@@ -104,6 +104,42 @@ This is **server-side latency** because both endpoints (driver and cluster)
 are in the same VPC. It is NOT cluster tick time (`last_tick_us`), which only
 measures the tick-processing portion.
 
+## Warmup gate
+
+Before the measurement window (hold timer) starts, the controller waits for
+entities to reach 100% of `target_players`. This ensures the system is fully
+loaded before any measurements are taken.
+
+- The controller polls `TelemetrySnapshot` for `Σ entities_current >= target_players`
+- Timeout: `warmup_timeout_seconds` per phase (default 120s)
+- If entities never reach the target → phase fails immediately
+- After warmup completes, the metrics accumulator is reset — ramp-up data
+  does not contaminate the measurement window
+
+## Validity gates
+
+### Per-snapshot gates (evaluated live during hold, ~2 Hz)
+
+| Axis | Source | Breach logic |
+|---|---|---|
+| `max_p99_latency_ms` | `max(cluster.last_tick_us) / 1000` | Fails if max tick across clusters exceeds threshold |
+| `min_entities` | `min(cluster.entities_current)` | Fails if any single cluster drops below threshold |
+| `min_total_entities` | `Σ cluster.entities_current` | Fails if sum across clusters drops below threshold. Auto-injected at 98% of `target_players` when not set (warmup guarantees 100% at hold start) |
+| `max_error_rate` | `Σ driver.err / Σ (driver.ok + driver.err)` | Fails if cumulative error rate exceeds threshold |
+
+Per-snapshot gates use a **breach window** (default 3 consecutive breaches).
+Intermittent spikes don't fail the phase — only sustained breaches do.
+
+### Phase-end gates (evaluated once from accumulated metrics)
+
+| Axis | Source | Breach logic |
+|---|---|---|
+| `max_mean_tick_ms` | `ClusterPhaseMetrics.mean_tick_us / 1000` | Fails if mean tick over the hold window exceeds the tick budget. Auto-injected as `1000 / tick_rate_hz` when not set |
+| `min_sample_rate` | `latency_samples / (total_ok + total_err)` | Fails if the ratio of latency samples to round-trips is too low — catches instrumentation bugs that silently discard echo matches |
+
+Phase-end gates have no breach window — a single evaluation at the end of the
+hold period determines pass/fail.
+
 ## Phase boundary behavior
 
 At each phase boundary, `PhaseMetricsAccumulator::phase_summary()`:
@@ -114,7 +150,8 @@ At each phase boundary, `PhaseMetricsAccumulator::phase_summary()`:
    snapshot that contains `driver_metrics`
 
 This means each phase's metrics reflect only the work done during that phase,
-not cumulative across the entire run.
+not cumulative across the entire run. The warmup gate's reset ensures the
+baseline is captured at steady state, not during ramp-up.
 
 ## Edge cases
 

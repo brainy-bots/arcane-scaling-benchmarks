@@ -1,6 +1,7 @@
 [plan]
 name = "smoke-2cluster-aws"
 description = "AWS smoke against 2-cluster topology (1 driver). Validates the controller→orchestrator→driver wire works end-to-end on real EC2."
+tick_rate_hz = 60
 
 [[phases]]
 name = "tiny-warmup"

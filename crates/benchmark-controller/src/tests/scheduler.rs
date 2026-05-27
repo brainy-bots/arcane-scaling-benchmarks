@@ -72,6 +72,7 @@ fn three_phase_plan() -> TestPlan {
         plan: PlanMeta {
             name: "test".into(),
             description: String::new(),
+            tick_rate_hz: 60,
         },
         phases: vec![
             Phase {
@@ -79,6 +80,7 @@ fn three_phase_plan() -> TestPlan {
                 target_players: 100,
                 spawn_delay_ms: 50,
                 hold_seconds: 0,
+                warmup_timeout_seconds: 120,
                 gate: None,
             },
             Phase {
@@ -86,6 +88,7 @@ fn three_phase_plan() -> TestPlan {
                 target_players: 200,
                 spawn_delay_ms: 50, // same as p1 — should NOT re-emit SetSpawnDelayMs
                 hold_seconds: 0,
+                warmup_timeout_seconds: 120,
                 gate: None,
             },
             Phase {
@@ -93,6 +96,7 @@ fn three_phase_plan() -> TestPlan {
                 target_players: 300,
                 spawn_delay_ms: 25, // changed — SHOULD emit SetSpawnDelayMs
                 hold_seconds: 0,
+                warmup_timeout_seconds: 120,
                 gate: None,
             },
         ],

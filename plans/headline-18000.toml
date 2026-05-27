@@ -5,6 +5,7 @@
 [plan]
 name = "headline-18000"
 description = "18,000 CCU ceiling test @ 60 Hz / 1 KB user_data / 12 drivers"
+tick_rate_hz = 60
 
 [[phases]]
 name = "tier-1500-aggregate"
@@ -13,6 +14,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-3000-aggregate"
@@ -21,6 +25,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-4500-aggregate"
@@ -29,6 +36,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-6000-aggregate"
@@ -37,6 +47,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-7500-aggregate"
@@ -45,6 +58,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-9000-aggregate"
@@ -53,6 +69,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-10500-aggregate"
@@ -61,6 +80,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-12000-aggregate"
@@ -69,6 +91,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-13500-aggregate"
@@ -77,6 +102,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-15000-aggregate"
@@ -85,6 +113,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-16500-aggregate"
@@ -93,6 +124,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "tier-18000-aggregate"
@@ -101,6 +135,9 @@ spawn_delay_ms = 25
 hold_seconds = 30
 [phases.gate]
 max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
 
 [[phases]]
 name = "cooldown"

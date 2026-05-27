@@ -31,16 +31,25 @@ The headline run below is reproducible from scratch by any reader with an AWS ac
 
 ## Reproduce (live ASCII dashboard)
 
-The benchmark is reproduced through the controller + orchestrator workflow. In
-both paths below, the live ASCII dashboard is rendered by `benchmark-controller`.
+There are exactly two ways to run the benchmark. Both produce identical results.
 
-### Path A (lowest friction, optional): Docker operator
+### Option 1: Without Docker
 
-If you already have Docker, this is the fastest setup because the container
-already includes `pwsh`, `terraform`, `aws`, `curl`, and `benchmark-controller`.
-It runs preflight -> setup -> run -> cleanup in one flow.
+Prerequisites: AWS CLI, Terraform, PowerShell 7+, curl, Rust toolchain.
 
-Windows PowerShell:
+```bash
+cargo build -p benchmark-controller --release
+```
+
+```powershell
+pwsh ./infra/aws/Run-Repro-Aws-Controller.ps1 `
+  -PlanFile ./plans/headline-13500.toml `
+  -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:v0.3.0
+```
+
+This does everything: preflight, terraform provision, fleet startup, benchmark run with live dashboard, and prompts to rerun or destroy when done.
+
+### Option 2: With Docker
 
 ```powershell
 docker run --rm -it `
@@ -51,150 +60,19 @@ docker run --rm -it `
   ghcr.io/brainy-bots/arcane-benchmark-operator:v0.3.0
 ```
 
-If GHCR access is unavailable, build and use the local fallback image:
-
-```powershell
-docker build -f Dockerfile.operator -t arcane-benchmark-operator:test .
-
-docker run --rm -it `
-  -e AWS_PROFILE=default `
-  -e AWS_REGION=us-east-1 `
-  -v "${env:USERPROFILE}\.aws:/root/.aws:ro" `
-  -v "${PWD}\results:/workspace/results" `
-  arcane-benchmark-operator:test
-```
-
-### Path B (manual scripts, optional): step-by-step
-
-Use this when you want to inspect each stage yourself.
-
-### Prerequisites
-
-- An AWS account
-- [Terraform](https://developer.hashicorp.com/terraform/install) (used under the hood by the setup script)
-- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) (`aws sts get-caller-identity` works)
-- [PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell)
-- **curl** (non-alias: Windows `curl.exe`, macOS/Linux `/usr/bin/curl` — used for a short orchestrator readiness probe)
-- Rust toolchain (`cargo build` works) *or* a pre-built `target/release/benchmark-controller`
-
-Verify tools resolve from your shell:
-
-```powershell
-terraform version
-aws --version
-pwsh -NoProfile -Command '$PSVersionTable.PSVersion'
-```
-
-If you installed Terraform or AWS CLI in the same terminal session just now,
-refresh process PATH once before running preflight:
-
-```powershell
-$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-terraform version
-aws --version
-```
-
-### Friction savers (controller path)
-
-| Feature | What to run |
-|--------|-------------|
-| **Preflight** | `pwsh ./infra/aws/Test-ReproPrereqs.ps1` — Terraform/AWS/SSM/curl, tfvars on disk, and `benchmark-controller` build readiness. |
-| **Provision / tear down** | `Setup-Benchmark-Aws.ps1` and `Cleanup-Benchmark-Aws.ps1` wrap `terraform init` / `apply` / `destroy`, write **`.benchmark-aws-terraform.json`** at the repo root, and wait for SSM (setup) or audit for leaks (cleanup). |
-| **One-shot full loop** | `Run-Repro-Aws-Controller.ps1` — preflight → setup → controller run → cleanup. Use `-SkipSetup` / `-SkipCleanup` while iterating. |
-| **Summary** | After every `Run-Benchmark-Aws-Controller.ps1`, **`benchmark_repro_summary.json`** plus a phase table are written under the run’s results directory (next to `manifest.json`). |
-
-Advanced operators can still invoke Terraform directly in `infra/terraform/aws_benchmark` (see that folder’s README); the documented path uses the scripts above.
-
-### 1. Clone
-
-```powershell
-git clone https://github.com/brainy-bots/arcane-scaling-benchmarks.git
-cd arcane-scaling-benchmarks
-```
-
-### 2. Build `benchmark-controller` once
-
-```bash
-cd crates/benchmark-controller
-cargo build --release
-cd ../..
-```
-
-Binary ends up at `crates/benchmark-controller/target/release/benchmark-controller` (the launcher searches this path and the repo-root `target/` layout if you use a workspace).
-
-### 3. Preflight + provision AWS
-
-From the repo root:
-
-```powershell
-pwsh ./infra/aws/Test-ReproPrereqs.ps1
-pwsh ./infra/aws/Setup-Benchmark-Aws.ps1
-```
-
-This writes **`.benchmark-aws-terraform.json`** in the repo root (and a copy under `infra/terraform/aws_benchmark/`) and waits until SSM reports every instance online.
-
-Defaults match the headline topology (`arcaneperhost.clusters_4.drivers_12.tfvars`, `us-east-1`).
-
-### 4. Run the benchmark with the terminal dashboard
-
-Run from an **interactive terminal window** (dashboard rendering assumes stdout is a real TTY):
-
-First, pick an image tag that actually exists on GHCR (do not assume `latest` exists):
-
-```powershell
-$BenchmarkImage = 'ghcr.io/brainy-bots/arcane-benchmark:v0.3.0'
-docker manifest inspect $BenchmarkImage | Out-Null
-```
-
-```powershell
-pwsh ./infra/aws/Run-Benchmark-Aws-Controller.ps1 `
-  -StatePath ./.benchmark-aws-terraform.json `
-  -PlanFile ./plans/headline-13500.toml `
-  -BenchmarkImage $BenchmarkImage
-```
-
-What this does (high level):
-
-- Starts / verifies the AWS fleet containers via SSM.
-- Runs drivers in orchestrator-coordinated mode.
-- Runs `benchmark-controller` locally against the orchestrator HTTP API and telemetry stream.
-- Writes **`benchmark_repro_summary.json`** and prints a phase outcome table when `manifest.json` is present.
-
-Artifacts land under `results/runs/<Environment>/<RunId>/` by default (phase JSON + manifest + summary).
-
-Optional: upload controller artifacts to the Terraform-created artifact bucket:
-
-```powershell
-pwsh ./infra/aws/Run-Benchmark-Aws-Controller.ps1 `
-  -StatePath ./.benchmark-aws-terraform.json `
-  -PlanFile ./plans/headline-13500.toml `
-  -BenchmarkImage $BenchmarkImage `
-  -S3UploadResults
-```
-
-**Optional — one command** (preflight, setup, run, cleanup):
-
-```powershell
-pwsh ./infra/aws/Run-Repro-Aws-Controller.ps1 `
-  -PlanFile ./plans/headline-13500.toml `
-  -BenchmarkImage $BenchmarkImage
-```
-
-### 5. Tear down (~2 min)
+### Cleanup (separate)
 
 ```powershell
 pwsh ./infra/aws/Cleanup-Benchmark-Aws.ps1
 ```
 
+### Configuration
+
+Override the fleet topology with `-Tfvars <name>` (default: `arcaneperhost.clusters_4.drivers_12.tfvars`). Available tfvars are in `infra/terraform/aws_benchmark/`.
+
+Results land under `results/runs/<Environment>/<RunId>/`. Add `-S3UploadResults` to also upload to the Terraform-created S3 bucket.
+
 **Total cost of one full reproduction: ~$5** on AWS on-demand pricing.
-
-### Troubleshooting (common failure signatures)
-
-- `terraform ... not found on PATH` → restart your shell or fix PATH so `terraform version` works (setup/cleanup shell out to Terraform).
-- `aws ... not found on PATH` → install AWS CLI v2 and verify `aws --version`.
-- `curl` preflight fails → use a real `curl` binary (not a PowerShell alias); on Windows, `curl.exe` ships with recent OS builds.
-- `benchmark-controller binary not found` → `cd crates/benchmark-controller` then `cargo build --release`.
-- Orchestrator/controller can’t connect → verify your laptop can reach the manager/orchestrator endpoint exported in state (security group / operator CIDR). Setup uses open `operator_cidr_blocks=["0.0.0.0/0"]` by default; tighten in Terraform/`Setup-Benchmark-Aws.ps1` if you need a `/32` lock-down.
 
 ---
 
@@ -255,27 +133,24 @@ The simulation here is a **kinematic physics baseline** — `position += velocit
 ## Project structure
 
 ```
-plans/                TOML test plans (e.g. headline-13500.toml) for benchmark-controller
+plans/                TOML test plans (e.g. headline-13500.toml)
 infra/
-  terraform/          Terraform — AWS fleet provisioning
-  aws/                PowerShell — preflight, setup/cleanup, controller run, one-shot repro
+  terraform/          Terraform modules — AWS fleet provisioning
+  aws/                Run-Repro-Aws-Controller.ps1 + Cleanup-Benchmark-Aws.ps1
 crates/
-  benchmark-controller/               Operator binary (terminal dashboard) — build on your laptop
-  benchmark-cluster/                Arcane cluster binary (BenchmarkSimulation) — baked into Docker image
-  benchmark-spacetimedb-persist/    SpacetimeDB WASM (Arcane persistence mode) — image build
-  benchmark-spacetimedb-full/       SpacetimeDB WASM (baseline) — image build
-docker/               Image helper scripts (e.g. benchmark-publish-module)
+  benchmark-controller/   Operator binary (terminal dashboard) — builds on your laptop
+  benchmark-cluster/      Arcane cluster binary — baked into Docker image
+docker/               Image helper scripts
 arcane/               Arcane Engine (git submodule) — image build
-arcane_swarm/         Load generator + orchestrator (git submodule) — image build + controller schema
+arcane_swarm/         Load generator + orchestrator (git submodule) — image build
+results/              Run artifacts land here
 ```
 
 ## Documentation
 
-- This **`README.md`** — headline numbers + AWS reproduction (controller path)
+- This **`README.md`** — headline numbers + reproduction instructions
 - [docs/BENCHMARK-METHODOLOGY.md](docs/BENCHMARK-METHODOLOGY.md) — full benchmark methodology, gating logic, measurement definitions, and interpretation
-- [infra/aws/README.md](infra/aws/README.md) — script inventory
-- [infra/terraform/aws_benchmark/README.md](infra/terraform/aws_benchmark/README.md) — Terraform reference
-- [results/README.md](results/README.md) — where run artifacts land
+- [infra/terraform/aws_benchmark/README.md](infra/terraform/aws_benchmark/README.md) — Terraform variables and fleet topology reference
 
 ## License
 
