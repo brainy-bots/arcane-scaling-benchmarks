@@ -31,7 +31,8 @@ fn print_usage() {
         --results-dir <dir> \\
         [--submitter <id>] \\
         [--s3-bucket <name> --s3-prefix <prefix>] \\
-        [--dashboard auto|on|off]   (default: auto — on iff stdout is a TTY)"
+        [--dashboard auto|on|off]   (default: auto — on iff stdout is a TTY) \\
+        [--redis-url redis://host:6379]  (enables Redis health monitoring)"
     );
 }
 
@@ -44,6 +45,7 @@ async fn main() {
     let mut s3_bucket: Option<String> = None;
     let mut s3_prefix: Option<String> = None;
     let mut dashboard_arg: Option<String> = None;
+    let mut redis_url: Option<String> = None;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -77,6 +79,10 @@ async fn main() {
                 i += 1;
                 dashboard_arg = Some(args[i].clone());
             }
+            "--redis-url" => {
+                i += 1;
+                redis_url = Some(args[i].clone());
+            }
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
@@ -107,6 +113,7 @@ async fn main() {
             results_dir: rd,
             submitter,
             enable_dashboard,
+            redis_url,
         },
         _ => {
             print_usage();

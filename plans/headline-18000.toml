@@ -1,15 +1,10 @@
-# Headline benchmark: matches the README's 13,500 CCU @ 60 Hz / 1 KB / 10.4 ms.
-#
-# target_players is AGGREGATE — the orchestrator distributes across active
-# drivers (e.g. 13,500 / 12 = 1,125 per driver, with remainder spread).
-#
-# Tier sequence mirrors the README: 1,500 → 13,500 aggregate in 1,500-step
-# increments, 30 s hold each, validity gate at 50 ms p99 latency (engine
-# gate; 100 ms production target leaves headroom for regional internet RTT).
+# Extended headline benchmark: 1,500 → 18,000 CCU @ 60 Hz / 1 KB.
+# Same structure as headline-13500 but continues beyond to find the ceiling.
+# Controller stops on first gate failure and reports last passing tier.
 
 [plan]
-name = "headline-13500"
-description = "13,500 CCU @ 60 Hz / 1 KB user_data / 12 drivers — README headline"
+name = "headline-18000"
+description = "18,000 CCU ceiling test @ 60 Hz / 1 KB user_data / 12 drivers"
 tick_rate_hz = 60
 
 [[phases]]
@@ -101,7 +96,7 @@ min_sample_rate = 0.02
 max_mean_latency_ms = 50.0
 
 [[phases]]
-name = "tier-13500-aggregate-headline"
+name = "tier-13500-aggregate"
 target_players = 13500
 spawn_delay_ms = 25
 hold_seconds = 30
@@ -111,7 +106,39 @@ max_error_rate = 0.05
 min_sample_rate = 0.02
 max_mean_latency_ms = 50.0
 
-# Cooldown: drain players cleanly so terraform destroy can complete fast.
+[[phases]]
+name = "tier-15000-aggregate"
+target_players = 15000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-16500-aggregate"
+target_players = 16500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-18000-aggregate"
+target_players = 18000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
 [[phases]]
 name = "cooldown"
 target_players = 0

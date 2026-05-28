@@ -15,13 +15,8 @@
     2. THIS SCRIPT      — drives the run via SSM + the local controller.
     3. terraform destroy — tear down.
 
-  Differences from Run-Benchmark-Aws.ps1:
-  - No per-tier PowerShell loop; the local benchmark-controller drives the
-    schedule against the orchestrator's HTTP API.
-  - Drivers run with --orchestrator-url instead of being driven via per-driver
-    SSM RunCommand fan-out.
-  - The orchestrator container runs alongside arcane-manager on the
-    manager EC2.
+  The local benchmark-controller drives the schedule against the
+  orchestrator's HTTP API. Drivers run with --orchestrator-url.
 
 .PARAMETER StatePath
   JSON produced by `terraform output -json benchmark_state` in
@@ -67,11 +62,19 @@ if (-not (Test-Path $PlanFile))  { throw "Plan file not found: $PlanFile" }
 # Resolve controller binary.
 if (-not $ControllerBinary) {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-    $candidate = Join-Path $repoRoot 'target/release/benchmark-controller'
-    if (-not (Test-Path $candidate)) {
-        $candidate = Join-Path $repoRoot 'target/debug/benchmark-controller'
+    # Prefer Linux binary on WSL (the .exe is a Windows binary that can't resolve /mnt/ paths).
+    $isWsl = Test-Path '/proc/version'
+    $exts = if ($isWsl) { @('', '.exe') } else { @('.exe', '') }
+    $dirs = @('crates/benchmark-controller/target/release', 'crates/benchmark-controller/target/debug', 'target/release', 'target/debug')
+    $candidate = $null
+    foreach ($d in $dirs) {
+        foreach ($ext in $exts) {
+            $p = Join-Path $repoRoot "$d/benchmark-controller$ext"
+            if (Test-Path $p) { $candidate = $p; break }
+        }
+        if ($candidate) { break }
     }
-    if (-not (Test-Path $candidate)) {
+    if (-not $candidate) {
         throw "benchmark-controller binary not found. Build it with: cargo build -p benchmark-controller --release"
     }
     $ControllerBinary = $candidate
@@ -97,8 +100,8 @@ $driverInstanceIds   = @($state.BenchmarkInstanceIds)
 $spacetimeInstanceId = $state.SpacetimeInstanceId
 $redisInstanceId     = $state.RedisInstanceId
 
-if (-not $managerInstanceId)   { throw "State missing ManagerInstanceId — provision with arcane_per_host topology" }
-if (-not $managerPublicDns)    { throw "State missing ManagerPublicDns — bump Terraform module to expose it" }
+if (-not $managerInstanceId)   { throw "State missing ManagerInstanceId - provision with arcane_per_host topology" }
+if (-not $managerPublicDns)    { throw "State missing ManagerPublicDns - bump Terraform module to expose it" }
 if ($driverInstanceIds.Count -lt 1) { throw "State has no driver instances" }
 
 if (-not $ResultsDir) {
@@ -238,7 +241,8 @@ for ($i = 0; $i -lt $clusterInstanceIds.Count; $i++) {
     $cid     = $clusterInstanceIds[$i]
     $cuid    = $clusterIds[$i]
     $clusPort = 8090
-    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host -e CLUSTER_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e CLUSTER_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 $BenchmarkImage benchmark-cluster"
+    $neighbors = @($clusterIds | Where-Object { $_ -ne $cuid }) -join ','
+    $clRun = "docker run -d --name bench-cluster --restart unless-stopped --network host --ulimit nofile=65536:65536 -e NODE_ID=$cuid -e REDIS_URL=redis://${redisHost}:6379 -e NEIGHBOR_IDS=$neighbors -e NODE_WS_PORT=$clusPort -e SPACETIMEDB_URI=http://${spacetimeHost}:3000 -e SPACETIMEDB_DATABASE=arcane -e SPACETIMEDB_PERSIST=1 -e SPACETIMEDB_PERSIST_HZ=1 -e BENCHMARK_TICK_RATE_HZ=60 -e ARCANE_BROADCAST_CHANNEL_CAP=256 $BenchmarkImage benchmark-cluster"
     $cmdId = Invoke-Ssm -InstanceId $cid -Commands @("docker rm -f bench-cluster 2>/dev/null || true", $clRun) -Comment "cluster $i"
     Wait-Ssm -CommandId $cmdId -InstanceId $cid | Out-Null
 }
@@ -265,7 +269,7 @@ Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $managerInstanceId -Commands @($mgrC
 # ── 5. Start drivers in orchestrated mode ────────────────────────────────────
 Write-Host "==> starting $($driverInstanceIds.Count) drivers in orchestrated mode"
 $orchUrlInternal = "ws://${managerPrivateIp}:${orchDriverPort}"
-$drvRun = "docker run -d --name bench-driver --restart unless-stopped --network host -e ORCHESTRATOR_URL=$orchUrlInternal $BenchmarkImage arcane-swarm --backend arcane --arcane-manager http://${managerPrivateIp}:8081 --orchestrator-url $orchUrlInternal --tick-rate 60 --max-players 4000 --user-data-bytes 1000 --inter-spawn-delay-ms 8 --max-players-per-driver 4000 --burst-enabled --burst-period-secs 30 --burst-cohort-percent 20 --burst-actions-per-player 10 --burst-window-ms 500 --zone-event-period-secs 30 --zone-event-window-ms 500 --actions-per-sec 2 --read-rate 5 --run-forever"
+$drvRun = "docker run -d --name bench-driver --restart unless-stopped --network host --ulimit nofile=65536:65536 -e ORCHESTRATOR_URL=$orchUrlInternal $BenchmarkImage arcane-swarm --backend arcane --arcane-manager http://${managerPrivateIp}:8081 --orchestrator-url $orchUrlInternal --tick-rate 60 --max-players 4000 --user-data-bytes 1000 --inter-spawn-delay-ms 8 --max-players-per-driver 4000 --burst-enabled --burst-period-secs 30 --burst-cohort-percent 20 --burst-actions-per-player 10 --burst-window-ms 500 --zone-event-period-secs 30 --zone-event-window-ms 500 --actions-per-sec 2 --read-rate 5 --run-forever"
 foreach ($did in $driverInstanceIds) {
     Wait-Ssm -CommandId (Invoke-Ssm -InstanceId $did -Commands @("docker rm -f bench-driver 2>/dev/null || true", $drvRun) -Comment "driver") -InstanceId $did | Out-Null
 }
@@ -281,7 +285,7 @@ $ready = $false
 while ((Get-Date) -lt $readyDeadline) {
     # `--max-time 3` cuts the SSE stream at 3s. We grab the first `data:`
     # line, parse it, check fleet size.
-    $raw = & curl -sN --max-time 3 "${orchUrlPublic}/telemetry/stream" 2>$null
+    $raw = & curl.exe -s -N --max-time 3 "${orchUrlPublic}/telemetry/stream" 2>$null
     if ($raw) {
         $firstData = ($raw -split "`n" | Where-Object { $_ -match '^data: ' } | Select-Object -First 1)
         if ($firstData) {
@@ -300,14 +304,34 @@ if (-not $ready) {
     Write-Host "WARNING: timed out waiting for full driver registration after 120s; continuing anyway" -ForegroundColor Yellow
 }
 
-# ── 6. Run the controller from the operator's laptop ─────────────────────────
+# ── 6. SSM port-forward Redis so the local controller can reach it ───────────
+$redisLocalPort = 16379
+Write-Host "==> opening SSM tunnel localhost:$redisLocalPort → ${redisInstanceId}:6379"
+$isWsl = Test-Path '/proc/version'
+$awsCmd = if ($isWsl -and (Get-Command aws.exe -ErrorAction SilentlyContinue)) { 'aws.exe' } else { 'aws' }
+$tunnelProc = Start-Process -PassThru -NoNewWindow -FilePath $awsCmd -ArgumentList @(
+    'ssm', 'start-session',
+    '--region', $region,
+    '--target', $redisInstanceId,
+    '--document-name', 'AWS-StartPortForwardingSession',
+    '--parameters', "{`"portNumber`":[`"6379`"],`"localPortNumber`":[`"$redisLocalPort`"]}"
+)
+Start-Sleep -Seconds 3
+if ($tunnelProc.HasExited) {
+    Write-Warning "SSM tunnel exited immediately (exit code $($tunnelProc.ExitCode)) — Redis monitoring will be unavailable"
+    $tunnelProc = $null
+}
+
+# ── 7. Run the controller from the operator's laptop ─────────────────────────
 Write-Host "==> running controller against $orchUrlPublic"
 
+$redisUrl = if ($tunnelProc) { "redis://127.0.0.1:${redisLocalPort}" } else { "redis://${redisHost}:6379" }
 $ctlArgs = @(
     '--plan',             $PlanFile,
     '--orchestrator-url', $orchUrlPublic,
     '--results-dir',      $ResultsDir,
-    '--submitter',        "operator-$env:USERNAME"
+    '--submitter',        "operator-$env:USERNAME",
+    '--redis-url',        $redisUrl
 )
 if ($S3UploadResults) {
     $ctlArgs += '--s3-bucket', $bucket
@@ -317,14 +341,24 @@ if ($S3UploadResults) {
 & $ControllerBinary @ctlArgs
 $ctlExit = $LASTEXITCODE
 
-# ── 7. Capture container logs BEFORE teardown ────────────────────────────────
+# Tear down SSM tunnel
+if ($tunnelProc -and -not $tunnelProc.HasExited) {
+    Stop-Process -Id $tunnelProc.Id -Force -ErrorAction SilentlyContinue
+    Write-Host "==> SSM Redis tunnel closed"
+}
+
+# ── 8. Capture container logs BEFORE teardown ────────────────────────────────
 Write-Host "==> capturing container logs"
 $logsDir = Join-Path $ResultsDir "container-logs"
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 foreach ($id in @($managerInstanceId)) {
-    $cmdId = Invoke-Ssm -InstanceId $id -Commands @("docker logs bench-orchestrator 2>&1 | tail -200", "echo ---SEPARATOR---", "docker logs bench-manager 2>&1 | tail -100") -Comment "logs manager"
-    $r = Wait-Ssm -CommandId $cmdId -InstanceId $id -TimeoutSec 60
-    Set-Content -Path (Join-Path $logsDir "manager-$id.log") -Value ($r.StandardOutputContent + "`n---STDERR---`n" + $r.StandardErrorContent)
+    try {
+        $cmdId = Invoke-Ssm -InstanceId $id -Commands @("docker logs bench-orchestrator 2>&1 | tail -200", "echo ---SEPARATOR---", "docker logs bench-manager 2>&1 | tail -100") -Comment "logs manager"
+        $r = Wait-Ssm -CommandId $cmdId -InstanceId $id -TimeoutSec 60
+        Set-Content -Path (Join-Path $logsDir "manager-$id.log") -Value ($r.StandardOutputContent + "`n---STDERR---`n" + $r.StandardErrorContent)
+    } catch {
+        Write-Host "   log fetch failed for manager $id" -ForegroundColor Yellow
+    }
 }
 for ($i = 0; $i -lt $driverInstanceIds.Count; $i++) {
     $id = $driverInstanceIds[$i]
@@ -348,7 +382,7 @@ foreach ($i in 0..($clusterInstanceIds.Count - 1)) {
 }
 Write-Host "   logs saved under $logsDir"
 
-# ── 8. Stop driver + orchestrator + cluster + support containers ─────────────
+# ── 9. Stop driver + orchestrator + cluster + support containers ─────────────
 Write-Host "==> stopping all containers"
 $stopAll = "docker rm -f bench-driver bench-orchestrator bench-manager bench-cluster bench-spacetime bench-redis 2>/dev/null || true"
 foreach ($id in $allInstances) {

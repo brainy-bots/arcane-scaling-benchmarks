@@ -1,0 +1,83 @@
+# Ceiling hunt: extend past the 13,500 headline to find the actual limit.
+#
+# Starts at 13,500 (proven baseline), then increments by 500 up to 16,000.
+# 30 s hold per tier. Gate at 50 ms (same as headline plan — server tick
+# budget). Since drivers are co-located in the same VPC, the gate measures
+# pure server-side processing time; real clients add network RTT on top.
+
+[plan]
+name = "ceiling-16000"
+description = "Ceiling hunt: 13,500 → 16,000 in 500-step increments, 50 ms gate"
+tick_rate_hz = 60
+
+[[phases]]
+name = "tier-13500-baseline"
+target_players = 13500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-14000"
+target_players = 14000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-14500"
+target_players = 14500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-15000"
+target_players = 15000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-15500"
+target_players = 15500
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "tier-16000-ceiling"
+target_players = 16000
+spawn_delay_ms = 25
+hold_seconds = 30
+[phases.gate]
+max_p99_latency_ms = 50
+max_error_rate = 0.05
+min_sample_rate = 0.02
+max_mean_latency_ms = 50.0
+
+[[phases]]
+name = "cooldown"
+target_players = 0
+spawn_delay_ms = 25
+hold_seconds = 10

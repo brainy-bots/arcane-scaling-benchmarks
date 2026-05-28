@@ -11,8 +11,17 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $tfDir = Join-Path $repoRoot 'infra/terraform/aws_benchmark'
 
-if (-not (Get-Command terraform -ErrorAction SilentlyContinue)) {
+$tfCmd = (Get-Command terraform -ErrorAction SilentlyContinue) ?? (Get-Command terraform.exe -ErrorAction SilentlyContinue)
+if (-not $tfCmd) {
     throw 'Cleanup-Benchmark-Aws.ps1: terraform not found on PATH.'
+}
+Set-Alias -Name terraform -Value $tfCmd.Source -Scope Script
+$script:IsWslWindowsTf = $tfCmd.Source -match '\.exe$' -and $tfCmd.Source -like '/mnt/*'
+function ConvertTo-TfPath([string]$p) {
+    if ($script:IsWslWindowsTf -and $p -match '^/mnt/([a-z])/(.*)$') {
+        return "$($Matches[1].ToUpper()):\$($Matches[2] -replace '/', '\')"
+    }
+    return $p
 }
 if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
     throw 'Cleanup-Benchmark-Aws.ps1: aws CLI not found on PATH.'
@@ -29,10 +38,12 @@ Write-Host "    tfvars:           $Tfvars"
 Write-Host "    region:           $Region"
 Write-Host "    project tag:      Project=$ProjectTag"
 
+$tfDirNative = ConvertTo-TfPath $tfDir
+
 $attempt = 1
 while ($attempt -le ($MaxDestroyRetries + 1)) {
     Write-Host "==> terraform destroy (attempt $attempt/$($MaxDestroyRetries + 1))"
-    terraform -chdir="$tfDir" destroy -var-file="$Tfvars" -var='operator_cidr_blocks=["0.0.0.0/0"]' -auto-approve
+    terraform -chdir="$tfDirNative" destroy -var-file="$Tfvars" -var='operator_cidr_blocks=["0.0.0.0/0"]' -auto-approve
     if ($LASTEXITCODE -eq 0) {
         Write-Host '    terraform destroy succeeded'
         break

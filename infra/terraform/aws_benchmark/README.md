@@ -2,26 +2,17 @@
 
 Single source of truth for provisioning and tearing down AWS benchmark environments. `terraform apply` creates every resource the run needs (EC2 fleet, security group, S3 artifact bucket, IAM role + instance profile). `terraform destroy` removes all of them.
 
-The PowerShell scripts under `infra/aws/` (`Run-Benchmark-Aws.ps1`, per-topology `RemoteBenchmark.ps1`, `Collect-AwsBenchmarkResults.ps1`, `Sync-AwsBenchmarkResultsFromS3.ps1`) only *run* the benchmark and *collect* results on the fleet that Terraform provisioned.
+**You should not need to run Terraform directly.** The single-command scripts handle it:
 
-## Prerequisites
+```powershell
+# Provision + run + cleanup (all-in-one)
+pwsh ./infra/aws/Run-Repro-Aws-Controller.ps1 -PlanFile ./plans/headline-13500.toml -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:v0.3.0
 
-- Terraform **>= 1.3** (cross-platform — Windows, macOS, Linux).
-- AWS credentials with permissions for EC2, IAM, S3, SSM.
-- **`.terraform.lock.hcl`** is committed for reproducible `terraform init`.
+# Cleanup only (if needed separately)
+pwsh ./infra/aws/Cleanup-Benchmark-Aws.ps1
+```
 
-### Install Terraform
-
-Pick the one that matches your OS:
-
-| OS | Install |
-|----|---------|
-| **Windows** | `winget install HashiCorp.Terraform` &nbsp;or&nbsp; `choco install terraform` |
-| **macOS** | `brew tap hashicorp/tap && brew install hashicorp/tap/terraform` |
-| **Linux (Debian/Ubuntu)** | `sudo apt-get install -y gnupg software-properties-common` &nbsp;then&nbsp; `curl -fsSL https://apt.releases.hashicorp.com/gpg \| sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \| sudo tee /etc/apt/sources.list.d/hashicorp.list && sudo apt-get update && sudo apt-get install -y terraform` |
-| **Any OS (no admin)** | Download the binary from <https://developer.hashicorp.com/terraform/install>, extract, and put `terraform` on your `PATH`. |
-
-Verify with `terraform version` — should print `Terraform v1.x`.
+Override the fleet topology with `-Tfvars <name>`. Available `.tfvars` files are in this directory.
 
 ## Validate (no AWS resources touched)
 
@@ -32,37 +23,6 @@ terraform fmt -check -recursive
 terraform init -backend=false -input=false
 terraform validate
 ```
-
-## End-to-end flow
-
-```bash
-cd infra/terraform/aws_benchmark
-
-# 1. Provision
-terraform init
-terraform apply -var=topology=AwsSpacetimeOnly
-#   or: terraform apply -var=topology=AwsArcanePerHost -var=arcane_cluster_count=2
-```
-
-```powershell
-# 2. Export the state JSON that Run-Benchmark-Aws.ps1 consumes (run from benchmark repo root)
-terraform -chdir=infra/terraform/aws_benchmark output -json benchmark_state |
-  Set-Content -LiteralPath .\.benchmark-aws-terraform.json -Encoding utf8
-
-# 3. Wait until every instance shows Online in SSM (user-data takes a few minutes).
-
-# 4. Run the benchmark
-pwsh ./infra/aws/Run-Benchmark-Aws.ps1 `
-  -StatePath ./.benchmark-aws-terraform.json `
-  -ConfigFile ./configs/<your-config>.psd1
-```
-
-```bash
-# 5. Tear everything down
-terraform destroy
-```
-
-Use a separate Terraform workspace per topology; do not flip `-var=topology` on the same state.
 
 ## Variables
 
@@ -78,7 +38,3 @@ Use a separate Terraform workspace per topology; do not flip `-var=topology` on 
 | `subnet_id` | *(auto)* | Default: first subnet of the default VPC |
 | `key_name` | *(none)* | Optional EC2 key pair |
 | `s3_bucket_force_destroy` | `true` | Keep true so `terraform destroy` succeeds with run artifacts in the bucket |
-
-## Driver discovery
-
-Driver instances carry `ArcaneBenchmarkEnvironment` and `ArcaneBenchmarkRole=driver` tags for `Collect-AwsBenchmarkResults.ps1`.

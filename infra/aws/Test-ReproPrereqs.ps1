@@ -59,16 +59,20 @@ Write-Host "    tfvars: $Tfvars"
 $checks = New-Object System.Collections.Generic.List[object]
 
 $checks.Add((Test-CommandAvailable -Name 'pwsh'))
-$checks.Add((Test-CommandAvailable -Name 'terraform'))
+$tfCheck = Test-CommandAvailable -Name 'terraform'
+if (-not $tfCheck.ok) {
+    $tfCheck = Test-CommandAvailable -Name 'terraform.exe'
+    if ($tfCheck.ok) { $tfCheck.name = 'terraform' }
+}
+$checks.Add($tfCheck)
 $checks.Add((Test-CommandAvailable -Name 'aws'))
 $checks.Add((Test-CurlAvailable))
 
-$ctrlCandidates = @(
-    (Join-Path $repoRoot 'target/release/benchmark-controller'),
-    (Join-Path $repoRoot 'target/debug/benchmark-controller'),
-    (Join-Path $repoRoot 'crates/benchmark-controller/target/release/benchmark-controller'),
-    (Join-Path $repoRoot 'crates/benchmark-controller/target/debug/benchmark-controller')
-)
+$isWsl = Test-Path '/proc/version'
+$exts = if ($isWsl) { @('', '.exe') } else { @('.exe', '') }
+$dirs = @('crates/benchmark-controller/target/release', 'crates/benchmark-controller/target/debug', 'target/release', 'target/debug')
+$ctrlCandidates = @()
+foreach ($d in $dirs) { foreach ($ext in $exts) { $ctrlCandidates += (Join-Path $repoRoot "$d/benchmark-controller$ext") } }
 $ctrlPath = $ctrlCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 $hasCargo = $null -ne (Get-Command cargo -ErrorAction SilentlyContinue)
 if ($ctrlPath) {

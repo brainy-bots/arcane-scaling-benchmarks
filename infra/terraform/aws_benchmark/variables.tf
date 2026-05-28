@@ -16,7 +16,7 @@ variable "topology" {
 
 variable "arcane_cluster_count" {
   type        = number
-  description = "For AwsArcanePerHost only: number of arcane-cluster EC2 instances."
+  description = "For AwsArcanePerHost only: number of arcane-node EC2 instances."
   default     = 2
   validation {
     condition     = var.topology != "AwsArcanePerHost" || (var.arcane_cluster_count >= 1 && var.arcane_cluster_count <= 32)
@@ -29,8 +29,8 @@ variable "arph_driver_count" {
   description = "For AwsArcanePerHost only: number of swarm driver instances. >1 enables multi-driver runs that fan out the player budget across N drivers; the harness aggregates per-driver FINAL lines into a strict-MAX gate. Each driver paces its joins so the manager sees single-driver join load regardless of N. Default 1 = historical single-driver behavior."
   default     = 1
   validation {
-    condition     = var.topology != "AwsArcanePerHost" || (var.arph_driver_count >= 1 && var.arph_driver_count <= 16)
-    error_message = "For AwsArcanePerHost, arph_driver_count must be between 1 and 16."
+    condition     = var.topology != "AwsArcanePerHost" || (var.arph_driver_count >= 1 && var.arph_driver_count <= 32)
+    error_message = "For AwsArcanePerHost, arph_driver_count must be between 1 and 32."
   }
 }
 

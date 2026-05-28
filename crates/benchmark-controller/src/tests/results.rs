@@ -3,10 +3,9 @@
 
 use crate::plan::{Phase, PlanMeta, TestPlan};
 use crate::results::{
-    OverallOutcome, PhaseOutcome, PhaseOutcomeEntry, PhaseResult, ResultsWriter, RunManifest,
-    Uploader,
+    ClusterPhaseMetrics, DriverPhaseMetrics, OverallOutcome, PhaseOutcome, PhaseOutcomeEntry,
+    PhaseResult, ResultsWriter, RunManifest, Uploader,
 };
-use serde_json::json;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -46,8 +45,26 @@ fn synth_phase_result(idx: usize, outcome: PhaseOutcome) -> PhaseResult {
         started_at_unix_ms: 1_700_000_000_000,
         ended_at_unix_ms: 1_700_000_060_000,
         outcome,
-        cluster_deltas: json!({"cluster-a": {"bytes_out": 1_000_000_000}}),
-        driver_metrics: json!({"mean_latency_ms": 50.0}),
+        cluster_metrics: ClusterPhaseMetrics {
+            total_entities: 4500,
+            cluster_count: 4,
+            worst_tick_us: 33_000,
+            mean_tick_us: 28_000,
+            total_bytes_in: 500_000_000,
+            total_bytes_out: 1_000_000_000,
+            total_broadcast_lagged_events: 0,
+            snapshot_count: 15,
+        },
+        driver_metrics: DriverPhaseMetrics {
+            driver_count: 12,
+            total_ok: 2_000_000,
+            total_err: 0,
+            latency_sum_us: 20_000_000_000,
+            latency_samples: 2_000_000,
+            mean_latency_ms: 10.0,
+            error_rate: 0.0,
+        },
+        redis_metrics: None,
     }
 }
 
@@ -70,6 +87,7 @@ fn synth_manifest() -> RunManifest {
             },
         ],
         overall: OverallOutcome::Pass,
+        headline: None,
     }
 }
 
@@ -78,12 +96,14 @@ fn synth_test_plan() -> TestPlan {
         plan: PlanMeta {
             name: "headline-13500".into(),
             description: String::new(),
+            tick_rate_hz: 60,
         },
         phases: vec![Phase {
             name: "warmup".into(),
             target_players: 1000,
             spawn_delay_ms: 50,
             hold_seconds: 60,
+            warmup_timeout_seconds: 120,
             gate: None,
         }],
     }
@@ -130,7 +150,7 @@ async fn phase_file_schema_includes_required_fields() {
     assert!(json["started_at_unix_ms"].is_number());
     assert!(json["ended_at_unix_ms"].is_number());
     assert_eq!(json["outcome"]["outcome"], "pass");
-    assert!(json["cluster_deltas"].is_object());
+    assert!(json["cluster_metrics"].is_object());
     assert!(json["driver_metrics"].is_object());
 }
 
@@ -175,7 +195,7 @@ async fn schema_is_forward_compatible_with_extra_fields() {
         "started_at_unix_ms": 1_700_000_000_000_u64,
         "ended_at_unix_ms": 1_700_000_060_000_u64,
         "outcome": { "outcome": "pass" },
-        "cluster_deltas": {},
+        "cluster_metrics": {},
         "driver_metrics": {},
         "future_extra_field": "a value future-Martin added",
         "another_unknown": [1, 2, 3]

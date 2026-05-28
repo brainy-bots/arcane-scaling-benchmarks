@@ -21,6 +21,8 @@ results/runs/
 
 # AWS launcher local state
 .benchmark-aws-terraform.json
+.benchmark-last-controller-run.json
+benchmark_state.json
 infra/aws/.benchmark-aws-state*.json
 infra/aws/aws_runs_*/
 infra/aws/bench-*.json

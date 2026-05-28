@@ -192,7 +192,8 @@ fn render(state: &DashboardState, snap: Option<&TelemetrySnapshot>) -> std::io::
             writeln!(
                 out,
                 "  {:<24}  entities={:>5}            (drain)   worst tick={:.2}ms / 16.67ms budget",
-                "TOTAL", total_ent,
+                "TOTAL",
+                total_ent,
                 worst_tick_us as f64 / 1000.0
             )?;
         }
@@ -247,7 +248,9 @@ fn render(state: &DashboardState, snap: Option<&TelemetrySnapshot>) -> std::io::
 /// to a 24-char prefix if the key doesn't follow the URL shape (so
 /// future cluster-id schemes still render something sensible).
 fn short_cluster_id(id: &str) -> String {
-    let trimmed = id.trim_start_matches("http://").trim_start_matches("https://");
+    let trimmed = id
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
     let host_port = trimmed.split('/').next().unwrap_or(trimmed);
     if host_port.len() > 24 {
         host_port[..24].to_string()
@@ -259,7 +262,9 @@ fn short_cluster_id(id: &str) -> String {
 fn format_command(cmd: &OrchestratorCommand) -> String {
     match cmd {
         OrchestratorCommand::SetPlayers(c) => format!("set_players({})", c.player_count),
-        OrchestratorCommand::SetSpawnDelayMs(c) => format!("set_spawn_delay_ms({})", c.spawn_delay_ms),
+        OrchestratorCommand::SetSpawnDelayMs(c) => {
+            format!("set_spawn_delay_ms({})", c.spawn_delay_ms)
+        }
         OrchestratorCommand::Stop => "stop".to_string(),
     }
 }

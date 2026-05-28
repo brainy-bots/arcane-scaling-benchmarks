@@ -7,12 +7,14 @@ const VALID_PLAN: &str = r#"
 [plan]
 name = "headline-13500"
 description = "13,500 CCU headline benchmark"
+tick_rate_hz = 60
 
 [[phases]]
 name = "warmup"
 target_players = 1000
 spawn_delay_ms = 50
 hold_seconds = 60
+warmup_timeout_seconds = 90
 [phases.gate]
 max_p99_latency_ms = 100
 
@@ -25,6 +27,8 @@ hold_seconds = 600
 max_p99_latency_ms = 100
 max_error_rate = 0.01
 min_entities = 13000
+max_mean_tick_ms = 16.67
+min_sample_rate = 0.02
 "#;
 
 #[test]
@@ -32,6 +36,7 @@ fn parse_valid_plan_returns_typed_struct() {
     let plan = parse(VALID_PLAN).expect("valid plan should parse");
     assert_eq!(plan.plan.name, "headline-13500");
     assert_eq!(plan.plan.description, "13,500 CCU headline benchmark");
+    assert_eq!(plan.plan.tick_rate_hz, 60);
     assert_eq!(plan.phases.len(), 2);
 
     let warmup = &plan.phases[0];
@@ -39,16 +44,20 @@ fn parse_valid_plan_returns_typed_struct() {
     assert_eq!(warmup.target_players, 1000);
     assert_eq!(warmup.spawn_delay_ms, 50);
     assert_eq!(warmup.hold_seconds, 60);
+    assert_eq!(warmup.warmup_timeout_seconds, 90);
     let gate = warmup.gate.as_ref().expect("warmup has a gate");
     assert_eq!(gate.max_p99_latency_ms, Some(100));
 
     let ramp = &plan.phases[1];
     assert_eq!(ramp.name, "ramp");
     assert_eq!(ramp.target_players, 13500);
+    assert_eq!(ramp.warmup_timeout_seconds, 120); // default
     let gate = ramp.gate.as_ref().expect("ramp has a gate");
     assert_eq!(gate.max_p99_latency_ms, Some(100));
     assert_eq!(gate.max_error_rate, Some(0.01));
     assert_eq!(gate.min_entities, Some(13000));
+    assert!((gate.max_mean_tick_ms.unwrap() - 16.67).abs() < 0.001);
+    assert!((gate.min_sample_rate.unwrap() - 0.02).abs() < 0.001);
 }
 
 #[test]
@@ -135,12 +144,14 @@ fn plan_meta_construct_from_parts_for_completeness() {
         plan: PlanMeta {
             name: "x".to_string(),
             description: String::new(),
+            tick_rate_hz: 60,
         },
         phases: vec![Phase {
             name: "p".to_string(),
             target_players: 1,
             spawn_delay_ms: 1,
             hold_seconds: 1,
+            warmup_timeout_seconds: 120,
             gate: Some(PhaseGate::default()),
         }],
     };

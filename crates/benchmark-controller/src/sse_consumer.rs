@@ -36,6 +36,10 @@ impl LiveGateState {
         *self.last.write().await = Evaluation::Pass;
     }
 
+    pub async fn set_breach_window(&self, n: u32) {
+        self.gate.lock().await.set_breach_window(n);
+    }
+
     /// Feed one snapshot. Used by the SSE consumer.
     pub async fn ingest(&self, snap: &TelemetrySnapshot) {
         let mut gate = self.gate.lock().await;
@@ -45,6 +49,12 @@ impl LiveGateState {
 
     pub async fn current(&self) -> Evaluation {
         *self.last.read().await
+    }
+
+    /// Acquire the inner gate for phase-end evaluation. The caller holds
+    /// the lock briefly to call `evaluate_phase_end`.
+    pub async fn gate_lock(&self) -> tokio::sync::MutexGuard<'_, ValidityGate> {
+        self.gate.lock().await
     }
 }
 
