@@ -104,19 +104,6 @@ COPY --from=builder /build/crates/benchmark-controller/target/release/benchmark-
 COPY --from=builder /build/crates/benchmark-spacetimedb-full/target/wasm32-unknown-unknown/release/benchmark_spacetimedb_full.wasm        /opt/modules/benchmark_spacetimedb_full.wasm
 COPY --from=builder /build/crates/benchmark-spacetimedb-persist/target/wasm32-unknown-unknown/release/benchmark_spacetimedb_persist.wasm /opt/modules/benchmark_spacetimedb_persist.wasm
 
-# Scripts for the driver roles. The pwsh orchestrators iterate player tiers,
-# invoke arcane-swarm (on PATH inside this image), and write CSVs to
-# /var/benchmark/out which the caller is expected to mount.
-#
-# Configs are intentionally NOT baked in. The cloud orchestrator stages the
-# selected config to S3 per run and the driver mounts it at
-# /opt/benchmark/runtime-configs/<filename> via `docker run -v`. This lets
-# researchers add new sibling configs locally and run them without rebuilding
-# the image; the only reason to cut a new image is a code change to scripts/
-# or any of the Rust binaries baked above.
-COPY scripts/ /opt/benchmark/scripts/
-
-# Helpers exposed as role commands.
 COPY docker/benchmark-publish-module.sh /usr/local/bin/benchmark-publish-module
 COPY docker/run-benchmark.sh            /usr/local/bin/run-benchmark
 RUN chmod +x /usr/local/bin/benchmark-publish-module /usr/local/bin/run-benchmark

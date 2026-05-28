@@ -12,8 +12,18 @@ $tfDir = Join-Path $repoRoot 'infra/terraform/aws_benchmark'
 $stateOutTf = Join-Path $tfDir '.benchmark-aws-terraform.json'
 $stateOutRoot = Join-Path $repoRoot '.benchmark-aws-terraform.json'
 
-if (-not (Get-Command terraform -ErrorAction SilentlyContinue)) {
+$tfCmd = (Get-Command terraform -ErrorAction SilentlyContinue) ?? (Get-Command terraform.exe -ErrorAction SilentlyContinue)
+if (-not $tfCmd) {
     throw 'Setup-Benchmark-Aws.ps1: terraform not found on PATH. Install Terraform and ensure this shell resolves `terraform`.'
+}
+Set-Alias -Name terraform -Value $tfCmd.Source -Scope Script
+# Windows terraform.exe can't resolve WSL /mnt/ paths — translate if needed.
+$script:IsWslWindowsTf = $tfCmd.Source -match '\.exe$' -and $tfCmd.Source -like '/mnt/*'
+function ConvertTo-TfPath([string]$p) {
+    if ($script:IsWslWindowsTf -and $p -match '^/mnt/([a-z])/(.*)$') {
+        return "$($Matches[1].ToUpper()):\$($Matches[2] -replace '/', '\')"
+    }
+    return $p
 }
 if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
     throw 'Setup-Benchmark-Aws.ps1: aws CLI not found on PATH. Install/configure AWS CLI first.'
@@ -29,15 +39,17 @@ Write-Host "    terraform module: $tfDir"
 Write-Host "    tfvars:           $Tfvars"
 Write-Host "    region:           $Region"
 
+$tfDirNative = ConvertTo-TfPath $tfDir
+
 Write-Host '==> terraform init'
-terraform -chdir="$tfDir" init -input=false -upgrade=false | Out-Null
+terraform -chdir="$tfDirNative" init -input=false -upgrade=false | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'terraform init failed' }
 
 Write-Host '==> terraform apply'
-terraform -chdir="$tfDir" apply -var-file="$Tfvars" -var='operator_cidr_blocks=["0.0.0.0/0"]' -auto-approve
+terraform -chdir="$tfDirNative" apply -var-file="$Tfvars" -var='operator_cidr_blocks=["0.0.0.0/0"]' -auto-approve
 if ($LASTEXITCODE -ne 0) { throw 'terraform apply failed' }
 
-terraform -chdir="$tfDir" output -json benchmark_state > $stateOutTf
+terraform -chdir="$tfDirNative" output -json benchmark_state > $stateOutTf
 if ($LASTEXITCODE -ne 0) { throw 'terraform output benchmark_state failed' }
 Copy-Item -LiteralPath $stateOutTf -Destination $stateOutRoot -Force
 Write-Host "    state JSON written:"
