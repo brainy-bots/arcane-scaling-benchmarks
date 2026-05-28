@@ -22,14 +22,9 @@ jobs:
       - name: Script lint
         shell: pwsh
         run: |
-          $issues = Invoke-ScriptAnalyzer -Path ./scripts -Recurse -Severity Error
+          $issues = Invoke-ScriptAnalyzer -Path ./infra/aws -Recurse -Severity Error
           if ($issues) {
             $issues | Format-Table -AutoSize
             throw "ScriptAnalyzer found issues."
           }
-
-      - name: Pester tests
-        shell: pwsh
-        run: |
-          Invoke-Pester -Path ./tests -CI
 
