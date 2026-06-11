@@ -55,7 +55,7 @@ cargo build -p benchmark-controller --release
 ```powershell
 pwsh ./infra/aws/Run-Repro-Aws-Controller.ps1 `
   -PlanFile ./plans/ceiling-8cluster-6000.toml `
-  -Tfvars arcaneperhost.clusters_8.drivers_4.tfvars `
+  -Tfvars arcaneperhost.clusters_8.drivers_20.tfvars `
   -BenchmarkImage ghcr.io/brainy-bots/arcane-benchmark:dev
 ```
 
@@ -80,7 +80,7 @@ pwsh ./infra/aws/Cleanup-Benchmark-Aws.ps1
 
 ### Configuration
 
-Override the fleet topology with `-Tfvars <name>` (default: `arcaneperhost.clusters_8.drivers_4.tfvars`). Available tfvars are in `infra/terraform/aws_benchmark/`.
+Override the fleet topology with `-Tfvars <name>` (default: `arcaneperhost.clusters_8.drivers_20.tfvars` — the fleet that produced the published run `20260528_035946`). Available tfvars are in `infra/terraform/aws_benchmark/`.
 
 Results land under `results/runs/<Environment>/<RunId>/`. Add `-S3UploadResults` to also upload to the Terraform-created S3 bucket.
 

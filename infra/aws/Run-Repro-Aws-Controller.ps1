@@ -20,7 +20,7 @@
 
 [CmdletBinding()]
 param(
-    [string] $Tfvars = 'arcaneperhost.clusters_4.drivers_12.tfvars',
+    [string] $Tfvars = 'arcaneperhost.clusters_8.drivers_20.tfvars',
     [string] $Region = 'us-east-1',
     [Parameter(Mandatory)] [string] $PlanFile,
     [Parameter(Mandatory)] [string] $BenchmarkImage,
