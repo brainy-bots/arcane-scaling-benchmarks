@@ -140,7 +140,7 @@ Revised mechanism: **the driver's TCP recv buffer fills because its tokio tasks 
 
 If this is right, the "cluster ceiling" numbers from 4c onward have been partly **driver-limited**, not cluster-limited. The real cluster capability could be significantly higher on identical hardware.
 
-**Next.** Verify the hypothesis by lifting the driver bottleneck only, not changing cluster hardware. Upgrade the driver-only instance to c7i.4xlarge (double the cores: 16 vCPU), keep cluster nodes at c7i.2xlarge. If latency stays flat at the floor and `broadcast_lagged` drops to near-zero, the hypothesis is confirmed and our published ceiling numbers have been artificially low on the Arcane side. This is a ~5-minute terraform change and ~$1 of EC2.
+**Next.** Verify the hypothesis by lifting the driver bottleneck only, not changing cluster hardware. Upgrade the driver-only instance to c7i.4xlarge (double the cores: 16 vCPU), keep cluster nodes at c7i.2xlarge. If latency stays flat at the floor and `broadcast_lagged` drops to near-zero, the hypothesis is confirmed and our published ceiling numbers have been artificially low on the Arcane side. This is a ~5-minute terraform change.
 
 ---
 
@@ -336,7 +336,7 @@ The latency-decomposition data agrees: drain-side `drain_avg_ms` stayed at 0.11�
 1. Update README with the 6,250 / 9,000 / 2,250 trio + bottleneck attribution. Replace the current 7,250 headline.
 2. Land velocity-based dead reckoning (arcane#46). Re-measure on the same fleet — expected to lift 30 Hz ceiling significantly because dead reckoning attacks the binding constraint (broadcast bytes) directly.
 3. Sibling experiment with `c5n.2xlarge` clusters (25 Gbps NIC) at the same workload. Confirms the NIC interpretation; gives a "what if we paid for network-optimized" data point.
-4. Tear down terraform fleet between sessions to stop the cost meter; current $50 budget left ~$30 of headroom after this session.
+4. Tear down terraform fleet between sessions; idle fleets are pure waste.
 
 ---
 
@@ -415,7 +415,7 @@ The wire-side documentation called the field "opaque application bytes" but the 
 
 Option A unblocks measurement immediately. Option B is the cleaner architectural fix and probably the right answer if we're going to publish "realistic per-entity opaque payload" as a benchmark dimension. Both are next-session work.
 
-**Tear-down.** Terraform fleet destroyed at end of session (no $/hr running). Total session spend ~$15-20, well under the $50 budget. Re-provisioning is a single `terraform apply` at the start of the next session.
+**Tear-down.** Terraform fleet destroyed at end of session. Re-provisioning is a single `terraform apply` at the start of the next session.
 
 ---
 
@@ -469,9 +469,7 @@ The latency decomposition agrees: at Run F's failure tier, `wire_avg_ms=0.14` an
 
 For incumbent comparison (where MMOs publish at 5–20 Hz / 200 ms): Arcane delivers strictly better update cadence at this player count, on commodity hardware, with the architectural escape hatch (affinity AOI / arcane#69) still ahead. The 6,250 → 8,250 → 5,500 → 4,750 progression is the literal cost story of moving from the incumbent gate to the Arcane standard.
 
-**Cost-per-CCU (4,750 realistic ceiling).** 4× c7i.2xlarge clusters + 1× c7i.2xlarge driver + 3× t3.large data-plane = ~$2/hr. At 4,750 CCU: ~$0.00042/CCU/hr.
-
-**Tear-down.** Terraform destroyed (20 resources). Session spend across both 2026-04-26 and 2026-04-27 sessions: ~$25-30 against $50 budget.
+**Tear-down.** Terraform destroyed (20 resources).
 
 **Next.**
 
@@ -531,7 +529,7 @@ Cap=2048 *eliminated* `Lagged` events as predicted — the channel never dropped
 **Setup.**
 
 - Image: `dev-2026-04-27-broadcastcap`. **`ARCANE_BROADCAST_CHANNEL_CAP=256` set as env var on cluster docker run** (RemoteBenchmark.ps1 change) since the broadcastcap image's default of 2048 was empirically wrong (Runs G + H). Note: arcane#52 reverted the upstream default to 256 but a new image hasn't been cut yet for that.
-- Fleet: `arcaneperhost.clusters_8.fastredis.tfvars` — 8 × c7i.2xlarge clusters, c7i.2xlarge driver, Redis on **c5n.large** (25 Gbps NIC, ~$0.108/hr), manager + spacetime on t3.large. New `redis_instance_type` terraform variable threads the NIC-optimized choice; default still falls through to `data_instance_type` so existing tfvars work unchanged.
+- Fleet: `arcaneperhost.clusters_8.fastredis.tfvars` — 8 × c7i.2xlarge clusters, c7i.2xlarge driver, Redis on **c5n.large** (25 Gbps NIC), manager + spacetime on t3.large. New `redis_instance_type` terraform variable threads the NIC-optimized choice; default still falls through to `data_instance_type` so existing tfvars work unchanged.
 - Config: `arcane_plus_spacetimedb.clusters_8.tick30_realistic.json` (`ClusterTickRateHz: 30`, `MaxLatencyMs: 100`, `UserDataBytes: 100`, sweep 500→15000 step 500).
 - Run id: `20260427_081304`.
 
@@ -581,7 +579,7 @@ Yet the ceiling dropped from 4,750 → 4,000. **All measurable per-cluster press
 3. **Cluster-side neighbor-deserialize overhead** in the tokio runtime. Cheap on CPU but each deserialize task adds scheduler-latency variance; at 8c there are 2.3× more such tasks per tick.
 4. **Manager round-robin distribution unevenness.** 4500/8 = 562.5; some cluster gets 562, another 563. Marginal.
 
-**What we know with confidence:** the 4-cluster ceiling (4,750 realistic) and 8-cluster ceiling (4,000 realistic) are both empirically measured, but the 8c regression mechanism isn't characterized. Going to 6c or 12c would help disambiguate variance from a real architectural curve, but adds another $5-10 to the budget without changing the headline.
+**What we know with confidence:** the 4-cluster ceiling (4,750 realistic) and 8-cluster ceiling (4,000 realistic) are both empirically measured, but the 8c regression mechanism isn't characterized. Going to 6c or 12c would help disambiguate variance from a real architectural curve, but costs another full run without changing the headline.
 
 **What this is NOT evidence of.** It is *not* evidence that "multi-cluster is useless." Multi-cluster is the substrate for capabilities the benchmark intentionally doesn't exercise:
 
@@ -601,11 +599,11 @@ In a benchmark that tests "every player sees every entity" with no AOI, multi-cl
 
 **Decisions made on Martin's behalf.**
 
-1. Stopped after Run I rather than running clusters_6 to find an intermediate point. The structural argument for why 8c regresses is general (per-player connection grows with N) and applies to 6c too in proportion. Confirming 6c numerically would burn another $5 to learn the same shape.
+1. Stopped after Run I rather than running clusters_6 to find an intermediate point. The structural argument for why 8c regresses is general (per-player connection grows with N) and applies to 6c too in proportion. Confirming 6c numerically would burn another full run to learn the same shape.
 2. Set `ARCANE_BROADCAST_CHANNEL_CAP=256` in the topology RemoteBenchmark.ps1 docker run rather than waiting for a new image with the arcane#52 default revert baked in — saved the ~10 minutes of image rebuild time. The override is also defensive against future changes.
 3. Did *not* test 8c at the 200 ms gate (would have been Run J). The 100 ms gate is the publishing standard; 200 ms data point is already covered by Run D at 4c.
 
-**Tear-down.** Terraform fleet destroyed (28 resources). Total session spend across 2026-04-26 + 2026-04-27 + this run: ~$35-45 against the $50 budget.
+**Tear-down.** Terraform fleet destroyed (28 resources).
 
 **Final headline matrix (unchanged from prior entry):**
 
@@ -622,7 +620,7 @@ In a benchmark that tests "every player sees every entity" with no AOI, multi-cl
 2. Kept the env-var tunability intact rather than reverting #51 entirely — operators with different latency budgets will want this knob.
 3. Did *not* set `ARCANE_BROADCAST_CHANNEL_CAP=256` explicitly in the topology docker run, since the arcane#52 default revert achieves the same effect cleaner. (If the upstream default ever changes, the topology env override would be the defensive next step.)
 
-**Tear-down.** Terraform fleet destroyed (20 resources). Total session spend across 2026-04-26 + 2026-04-27 + 2026-04-27 (this run): ~$30-35 against the $50 budget.
+**Tear-down.** Terraform fleet destroyed (20 resources).
 
 **Next.**
 
@@ -788,6 +786,39 @@ The fix restores sequence-tagged round-trip latency measurement. The 13.4 ms mea
 2. Advance `arcane_swarm` submodule pointer in benchmarks repo + commit controller improvements (breach window widening, ulimit fix) + this journal entry.
 3. Follow-up issue: controller gate should refuse Pass when `latency_samples=0` if the run mode claims to measure latency — prevents false-positive benchmarks from instrumentation regressions.
 4. Resume headline-scale runs with the fixed image to get latency data at 13,500+ CCU.
+
+---
+
+## 2026-05-28 — Honest re-baseline: 8-node ceiling run, first measured engine break (RunId `20260528_035946`)
+
+### Hypothesis
+
+With sequence-tagged RTT restored (2026-05-26 entry), the ghost-entity driver default fixed, and strict validity gates in place, an 8-node ramp at 60 Hz / 1 KB `user_data` should find the *real* engine ceiling — expected near the ~3,900 CCU bandwidth math from the plan header, far below the invalidated 13,500 figure. Unlike every prior "ceiling" (all driver-cap-bound), this run was designed to push until a validity gate actually breaks.
+
+### Setup
+
+- **Image**: `ghcr.io/brainy-bots/arcane-benchmark:dev` as of 2026-05-28 (contains the FlatBuffers wire format, sequence-tagged RTT, DeltaCache hash fix, and driver `--players` default 0). The image digest was **not** recorded in the run manifest — see Next.
+- **Plan**: `ceiling-8cluster-6000` (plan_sha `8469bab76a460dd0`) — 500 → 6,000 CCU in 250-step tiers, 60 Hz tick, 1 KB per-entity `user_data`, 50 ms mean-latency gate, strict gates active (100% warmup entity match, 98% entity floor during hold, tick budget, minimum latency-sample rate).
+- **Fleet**: `arcaneperhost.clusters_8.drivers_20.tfvars` — 8 × c6in.4xlarge nodes (50 Gbps NIC), 20 × c6in.4xlarge drivers, 1 × t3.large data, 1 × c5n.large Redis.
+- **RunId**: `20260528_035946`. Earlier RunIds from the same session (`20260528_003440` … `20260528_033241`) were setup/iteration runs; this is the canonical one the README publishes.
+
+### Result
+
+Tiers 500 through 2,750 all passed. Top passing tier (2,750 CCU): **28.82 ms mean latency** across 20 independent drivers (range 27.63–30.55 ms), **3,080,416 OK round-trips, 0 errors**, 113,883 latency samples, mean node tick 1.42 ms (worst 3.29 ms) against the 16.67 ms 60 Hz budget, zero `broadcast_lagged` events.
+
+Tier 3,000 **failed hard**: mean latency 682.08 ms (24× jump, vs the 50 ms gate), 65,441 `broadcast_lagged` events — while node CPU stayed nearly idle (mean tick 2.38 ms). That signature is NIC saturation on the O(N²) outbound broadcast path, not compute exhaustion. A wall, not a slope.
+
+### Interpretation
+
+This is the **first measured engine break** in the journal — every previous ceiling was the per-driver √N safety cap. The number is far below the retracted 13,500 because the old number was a measurement artifact (see 2026-05-26 and the README's "What changed" section); this one is sequence-tagged, ghost-entity-free, and gate-verified at every tier.
+
+What this does *not* show: Redis telemetry is all zeros in the phase JSONs (in-VPC Redis polling not yet implemented — #99), so the Redis path is unobserved. The NIC-saturation interpretation rests on the lagged-events + idle-CPU signature plus the bandwidth math, not on direct per-tier NIC counters.
+
+### Next
+
+1. Record the image digest (or use an immutable tag) for any run that becomes a published claim — `:dev` is a moving tag and weakens long-term reproducibility of this entry.
+2. Orchestrator-side Redis `INFO` polling into `TelemetrySnapshot` (#99) so the Redis path stops being a blind spot.
+3. The O(N²) broadcast wall is the direct motivation for AOI/visibility filtering (arcane#149 and the visibility-filter chain) — the next structural lever on the ceiling.
 
 ---
 

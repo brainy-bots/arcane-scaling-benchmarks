@@ -1,4 +1,5 @@
-# Ceiling test: 8 clusters × c6in.4xlarge (50 Gbps), 12 drivers × c6in.4xlarge
+# Ceiling test: 8 clusters × c6in.4xlarge (50 Gbps), 20 drivers × c6in.4xlarge
+# (fleet: arcaneperhost.clusters_8.drivers_20.tfvars — the published run 20260528_035946)
 #
 # Expected bandwidth ceiling ~3,900 total at 1 KB user_data, 60 Hz.
 # 250-step increments from 500 → 6,000 to find the real limit.
